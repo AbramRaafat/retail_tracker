@@ -1,0 +1,3 @@
+# ignore the model weights file
+osnet_x1_0_msmt17.pt
+yolo11x.pt
