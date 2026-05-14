@@ -1,3 +1,6 @@
 # ignore the model weights file
-osnet_x1_0_msmt17.pt
-yolo11x.pt
+data/
+results/
+/weights/yolo11x.pt
+/weights/YOLO11s_JDE-CHMOT17-64b-100e_TBHS_m075_1280px.onnx
+/weights/YOLO11s_JDE-CHMOT17-64b-100e_TBHS_m075_1280px.onnx.data

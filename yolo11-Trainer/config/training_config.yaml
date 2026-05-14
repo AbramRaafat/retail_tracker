@@ -1,0 +1,42 @@
+# Hybrid Dataset Configuration for YOLO11 Training
+
+# Paths
+train:
+  crowdhuman: "/datasets/crowdhuman/train/"
+  merl: "/datasets/merl/train/"
+val:
+  crowdhuman: "/datasets/crowdhuman/val/"
+  merl: "/datasets/merl/val/"
+
+# Class Configuration
+nc: 1  # Only person class
+names: ['person']
+
+# Balancing Hyperparameters
+balancing:
+  # Ensure 50% of batches come from MERL despite having fewer images
+  merl_batch_ratio: 0.5
+  
+  # Loss weight multiplier for MERL samples
+  merl_loss_weight: 50.0
+  
+  # Augmentation multiplier for MERL (effective dataset expansion)
+  merl_augment_multiplier: 10
+
+# Teacher Model (YOLO11x)
+teacher:
+  model: "yolo11x.pt"
+  imgsz: 1280
+  batch: 16
+  epochs: 100
+  lr0: 0.01
+  weight_decay: 0.0005
+
+# Student Model (YOLO11s via Distillation)
+student:
+  model: "yolo11s.pt"
+  imgsz: 640
+  batch: 32
+  epochs: 150
+  lr0: 0.02
+  distillation_alpha: 0.7  # 70% teacher loss, 30% GT loss
