@@ -1,0 +1,90 @@
+.vscode/
+.venv/
+.eggs/
+env/
+*.DS_Store
+.coverage
+htmlcov/
+# interpreter bytecode
+__pycache__/
+__MACOSX/
+
+# experiment results
+runs/
+videos/
+
+# experiment files
+*.pkl
+
+# partial downlaods
+*.part
+
+# Downloaded weights
+weights/*.pt
+weights/*.torchscript
+weights/*.onnx
+weights/*_openvino_model
+weights/*.engine
+weights/*.tflite
+
+# evaluation tools folder
+boxmot/engine/trackeval/
+
+# zip files
+*.zip
+
+# exports
+*_openvino_model
+*.torchscript
+*.pt
+*.pth
+*.pth
+*.onnx
+*.engine
+*.data
+
+# interactive plots
+*.html
+*.gif
+*.pdf
+
+# tf models
+*saved_model/
+tf_models/
+
+# distribution / packaging
+build/
+dist/
+*.egg-info/
+site/
+
+# cmc debug images
+boxmot/motion/cmc/*.jpg
+
+# json outputs
+*_output.json
+
+# In-place compiled native (C++) tracker artifacts (scikit-build-core editable install)
+boxmot/native/trackers/**/*.so
+boxmot/native/trackers/**/*.dylib
+boxmot/native/trackers/**/*.dll
+boxmot/native/trackers/**/*.pyd
+boxmot/native/trackers/**/*.a
+boxmot/native/trackers/*/*_replay
+boxmot/native/trackers/*/*_replay.exe
+
+# CMake caches that may end up beside the C++ sources in inplace builds
+boxmot/native/trackers/**/CMakeCache.txt
+boxmot/native/trackers/**/CMakeFiles/
+boxmot/native/trackers/**/cmake_install.cmake
+
+# scikit-build-core inplace editable build artifacts at the repo root
+.skbuild-info.json
+.cmake/
+.ninja_deps
+.ninja_log
+build.ninja
+CMakeCache.txt
+CMakeFiles/
+CMakeInit.txt
+cmake_install.cmake
