@@ -72,6 +72,8 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
                            dets.shape[0], embs.shape[0])
             embs = None
         elif embs is not None:
-            embs = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12)
+            # Do not normalize here. Trackers own final embedding normalization because
+            # different trackers/backends may have different appearance assumptions.
+            pass
 
         return JDEResult(detections=dets, embeddings=embs)

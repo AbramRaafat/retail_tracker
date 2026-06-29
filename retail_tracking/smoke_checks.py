@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 BOXMOT_ROOT = ROOT / "boxmot"
 if str(BOXMOT_ROOT) not in sys.path:
     sys.path.insert(0, str(BOXMOT_ROOT))
@@ -143,7 +145,14 @@ def check_embedding_normalization():
 
     norms = np.linalg.norm(result.embeddings, axis=1)
     assert result.embeddings.dtype == np.float32
-    assert np.allclose(norms, np.ones_like(norms))
+    # Verify raw embeddings are NOT normalized (norm of [3,4] is 5, norm of [0,2] is 2)
+    assert np.allclose(norms, np.array([5.0, 2.0], dtype=np.float32))
+
+    # Verify TrackTrack._normalize_embeddings returns unit-norm vectors
+    fake_embs = np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32)
+    normed_embs = TrackTrack._normalize_embeddings(fake_embs)
+    normed_norms = np.linalg.norm(normed_embs, axis=1)
+    assert np.allclose(normed_norms, np.ones_like(normed_norms))
 
 
 def check_empty_frame_updates_tracker():
