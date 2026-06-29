@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 import numpy as np
 from ultralytics import YOLO
@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 class JDEResult:
     detections: np.ndarray
     embeddings: Optional[np.ndarray] = None
+    relaxed_detections: Optional[np.ndarray] = None
+    relaxed_embeddings: Optional[np.ndarray] = None
+    metadata: dict = field(default_factory=dict)
 
 
 class BaseJDEAdapter(ABC):
@@ -58,10 +61,17 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
         elif hasattr(res.boxes, 'embs') and res.boxes.embs is not None:
             embs = res.boxes.embs.data.cpu().numpy() if hasattr(res.boxes.embs, 'data') else res.boxes.embs.cpu().numpy()
             
+        if embs is not None:
+            embs = np.asarray(embs, dtype=np.float32)
+            if embs.ndim == 1:
+                embs = embs.reshape(1, -1)
+
         # Validate spatial-appearance mapping constraint
         if embs is not None and embs.shape[0] != dets.shape[0]:
             logger.warning("Dimension mismatch: Detections (%d) vs Embeddings (%d). Dropping embeddings.", 
                            dets.shape[0], embs.shape[0])
             embs = None
+        elif embs is not None:
+            embs = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12)
 
         return JDEResult(detections=dets, embeddings=embs)

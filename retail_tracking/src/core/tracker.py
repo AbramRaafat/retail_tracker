@@ -1,10 +1,19 @@
 import cv2
 import logging
 import numpy as np
+import sys
 from pathlib import Path
 from typing import Optional
-from boxmot.trackers.tracker_zoo import create_tracker
-from src.detection.adapters import BaseJDEAdapter
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+BOXMOT_ROOT = PROJECT_ROOT / "boxmot"
+if str(BOXMOT_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOXMOT_ROOT))
+
+try:
+    from retail_tracking.src.detection.adapters import BaseJDEAdapter
+except ImportError:
+    from src.detection.adapters import BaseJDEAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +47,8 @@ class RetailTracker:
         # BoxMOT Factory: Automatically loads default YAMLs if tracker_config is None.
         # Warms up ReID models internally if reid_weights is provided.
         try:
+            from boxmot.trackers.tracker_zoo import create_tracker
+
             self.tracker = create_tracker(
                 tracker_type=tracker_type,
                 tracker_config=tracker_config,
@@ -53,9 +64,17 @@ class RetailTracker:
         Executes detector inference and routes state updates.
         """
         jde_result = self.detector.predict(frame)
-        
-        if jde_result.detections.shape[0] == 0:
-            return np.empty((0, 8))
+
+        dets = jde_result.detections
+        if dets is None or dets.shape[0] == 0:
+            dets = np.empty((0, 6), dtype=np.float32)
+
+        if hasattr(self.tracker, "set_frame_aux"):
+            self.tracker.set_frame_aux(
+                relaxed_detections=jde_result.relaxed_detections,
+                relaxed_embeddings=jde_result.relaxed_embeddings,
+                metadata=jde_result.metadata,
+            )
 
         embs = jde_result.embeddings
 
@@ -63,9 +82,9 @@ class RetailTracker:
         # If JDE embeddings exist, inject them directly to bypass BoxMOT ReID.
         # If None, BoxMOT utilizes its initialized `reid_weights` to extract them natively.
         if embs is not None:
-            tracker_outputs = self.tracker.update(jde_result.detections, frame, embs=embs)
+            tracker_outputs = self.tracker.update(dets, frame, embs=embs)
         else:
-            tracker_outputs = self.tracker.update(jde_result.detections, frame)
+            tracker_outputs = self.tracker.update(dets, frame)
         
         return tracker_outputs if len(tracker_outputs) > 0 else np.empty((0, 8))
 

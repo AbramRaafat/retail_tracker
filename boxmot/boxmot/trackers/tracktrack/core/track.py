@@ -29,6 +29,7 @@ class Track(object):
         self.args = args
         self.box = detection[:4]
         self.score = detection[4]
+        self.cls = detection[5] if len(detection) >= 6 else 0
         self.feat = detection[6:][np.newaxis, :].copy()
         
         self.delta_t = 3
@@ -48,7 +49,7 @@ class Track(object):
     def update_features(self, feat, score):
         beta = self.alpha + (1 - self.alpha) * (1 - score)
         self.feat = beta * self.feat + (1 - beta) * feat
-        self.feat /= np.linalg.norm(self.feat)
+        self.feat /= np.linalg.norm(self.feat) + 1e-12
 
     def initiate(self, frame_id, counter):
         self.track_id = counter.get_track_id()
@@ -73,6 +74,7 @@ class Track(object):
         self.velocity /= self.delta_t
         self.box = detection.box.copy()
         self.score = detection.score
+        self.cls = detection.cls
         self.end_frame_id = frame_id
         self.state = TrackState.Tracked if len(self.history.keys()) >= self.args.min_len else TrackState.New
 

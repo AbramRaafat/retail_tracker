@@ -20,13 +20,19 @@ class PipelineConfig:
     Algorithmic hyperparameters are delegated to BoxMOT YAML configurations.
     """
     input_video: str
-    output_video: str
+    video_out: Optional[str]
     yolo_model: str
     reid_model: Optional[str]
     tracker_config: Optional[str]
     target_fps: int
     tracker_type: str
+    display: bool
     verbose: bool
+
+    @property
+    def output_video(self) -> Optional[str]:
+        """Backward-compatible alias for older callers."""
+        return self.video_out
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> 'PipelineConfig':
@@ -35,8 +41,14 @@ class PipelineConfig:
         if not input_path.exists():
             raise FileNotFoundError(f"Input video not found: {input_path}")
 
-        output_path = Path(args.output).resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        requested_video_out = getattr(args, "video_out", None)
+        if requested_video_out is None:
+            requested_video_out = getattr(args, "output", None)
+
+        output_path = None
+        if requested_video_out:
+            output_path = Path(requested_video_out).resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
         yolo_path = Path(args.model) if Path(args.model).is_absolute() else WEIGHTS_DIR / args.model
         if not yolo_path.exists():
@@ -56,11 +68,12 @@ class PipelineConfig:
 
         return cls(
             input_video=str(input_path),
-            output_video=str(output_path),
+            video_out=str(output_path) if output_path else None,
             yolo_model=str(yolo_path),
             reid_model=str(reid_path) if reid_path else None,
             tracker_config=str(tracker_cfg_path) if tracker_cfg_path else None,
             target_fps=args.fps,
             tracker_type=args.tracker,
+            display=getattr(args, "display", False),
             verbose=args.verbose
         )

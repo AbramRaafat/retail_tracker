@@ -47,3 +47,8 @@ init_thr:
   type: uniform
   default: 0.6
   range: [0.4, 0.9]
+
+cost_mode:
+  type: choice
+  default: static
+  options: [static]

@@ -38,7 +38,8 @@ class Tracker(object):
         dets_all = dets_high + dets_low + dets_del_high
         matches, u_tracks, u_dets = iterative_assignment(tracked_lost, dets_high, dets_low, dets_del_high,
                                                          self.args.match_thr, self.args.penalty_p, self.args.penalty_q,
-                                                         self.args.reduce_step, self.frame_id)
+                                                         self.args.reduce_step, self.frame_id,
+                                                         cost_mode=self.args.cost_mode)
 
         for t, d in matches: tracked_lost[t].update(self.frame_id, dets_all[d])
         for t in u_tracks: tracked_lost[t].mark_lost()
@@ -46,7 +47,8 @@ class Tracker(object):
         dets_high_left = [dets_all[i] for i in u_dets if i < len(dets_high)]
         matches, u_tracks, u_dets = iterative_assignment(new, dets_high_left, [], [], self.args.match_thr,
                                                          self.args.penalty_p, self.args.penalty_q,
-                                                         self.args.reduce_step, self.frame_id)
+                                                         self.args.reduce_step, self.frame_id,
+                                                         cost_mode=self.args.cost_mode)
 
         for t, d in matches: new[t].update(self.frame_id, dets_high_left[d])
         for t in u_tracks: new[t].mark_removed()

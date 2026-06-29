@@ -3,9 +3,21 @@ import sys
 import argparse
 import logging
 import time
-from src.core.tracker import RetailTracker
-from src.detection.adapters import UltralyticsJDEAdapter
-from src.config import PipelineConfig
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BOXMOT_ROOT = PROJECT_ROOT / "boxmot"
+if str(BOXMOT_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOXMOT_ROOT))
+
+try:
+    from retail_tracking.src.core.tracker import RetailTracker
+    from retail_tracking.src.detection.adapters import UltralyticsJDEAdapter
+    from retail_tracking.src.config import PipelineConfig
+except ImportError:
+    from src.core.tracker import RetailTracker
+    from src.detection.adapters import UltralyticsJDEAdapter
+    from src.config import PipelineConfig
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -19,7 +31,14 @@ def parse_arguments() -> argparse.Namespace:
     
     # I/O Paths
     parser.add_argument("-i", "--input", type=str, required=True, help="Input video source.")
-    parser.add_argument("-o", "--output", type=str, required=True, help="Output video destination.")
+    parser.add_argument(
+        "-o", "--output", "--video-out",
+        dest="video_out",
+        type=str,
+        default=None,
+        help="Optional annotated output video path."
+    )
+    parser.add_argument("--display", action="store_true", help="Display annotated tracking output in a window.")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS for rendering.")
     
     # Model Zoo Routing
@@ -44,7 +63,7 @@ def parse_arguments() -> argparse.Namespace:
 def run_pipeline(config: PipelineConfig) -> None:
     if config.verbose:
         logger.setLevel(logging.DEBUG)
-        
+
     try:
         # Note: Conf threshold is maintained low here to allow the tracker's YAML 
         # configuration (e.g., det_thresh: 0.4) to govern the gating logic.
@@ -72,39 +91,65 @@ def run_pipeline(config: PipelineConfig) -> None:
         
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+
     # Dynamically read the native FPS of the source video
     source_fps = cap.get(cv2.CAP_PROP_FPS)
-    
+
     # Use native FPS. Fallback to CLI target_fps ONLY if OpenCV fails to read the metadata (returns 0)
     fps = source_fps if source_fps > 0 else config.target_fps
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(config.output_video, fourcc, int(fps), (width, height))
-    
-    logger.info("Pipeline Ready: %dx%d @ %d FPS", width, height, fps)
+
+    out = None
+    if config.video_out:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(config.video_out, fourcc, int(fps), (width, height))
+        if not out.isOpened():
+            cap.release()
+            logger.error("Failed to open output writer: %s", config.video_out)
+            sys.exit(1)
+
+    visualize = out is not None or config.display
+
+    logger.info("Pipeline Ready: %dx%d @ %.2f FPS", width, height, fps)
     logger.info("Detector: %s", config.yolo_model)
-    if config.reid_model:
-        logger.info("ReID Extractor: %s (Two-Stage Architecture Active)", config.reid_model)
+    logger.info(
+        "Run mode: %s",
+        "visualization mode" if visualize else "production inference mode"
+    )
+    if config.video_out:
+        logger.info("Video output enabled: %s", config.video_out)
     else:
-        logger.info("ReID Extractor: Internal (JDE Architecture Active)")
+        logger.info("Video output disabled")
+    if config.reid_model:
+        logger.info("ReID mode: two-stage mode with external model %s", config.reid_model)
+    else:
+        logger.info("ReID mode: JDE mode / internal embeddings when provided by detector")
 
     frame_count = 0
+    total_processing_time = 0.0
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-                
+
             frame_count += 1
             start_time = time.time()
-            
+
             tracks = tracker_system.process_frame(frame)
-            annotated_frame = tracker_system.draw_tracks(frame, tracks)
-            out.write(annotated_frame)
-            
+
+            if visualize:
+                annotated_frame = tracker_system.draw_tracks(frame.copy(), tracks)
+                if out is not None:
+                    out.write(annotated_frame)
+                if config.display:
+                    cv2.imshow("Retail Tracking", annotated_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        logger.info("Display stopped by user.")
+                        break
+
             processing_time = time.time() - start_time
-            
+            total_processing_time += processing_time
+
             if config.verbose:
                 logger.debug("Frame %05d | Active Tracks: %03d | Latency: %.3fs", 
                              frame_count, len(tracks), processing_time)
@@ -115,9 +160,15 @@ def run_pipeline(config: PipelineConfig) -> None:
         logger.warning("\nUser interruption detected.")
     finally:
         cap.release()
-        out.release()
+        if out is not None:
+            out.release()
+        if config.display:
+            cv2.destroyAllWindows()
         print()
-        logger.info("Execution finalized. Artifact: %s", config.output_video)
+        avg_fps = frame_count / total_processing_time if total_processing_time > 0 else 0.0
+        logger.info("Execution finalized. Frames: %d | Average FPS: %.2f", frame_count, avg_fps)
+        if config.video_out:
+            logger.info("Artifact: %s", config.video_out)
 
 
 if __name__ == "__main__":

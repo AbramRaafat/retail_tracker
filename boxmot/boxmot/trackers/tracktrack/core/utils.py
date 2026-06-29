@@ -1,5 +1,8 @@
 import lap
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 def bbox_overlaps(a_x1y1x2y2, b_x1y1x2y2):
     num_a, num_b = a_x1y1x2y2.shape[0], b_x1y1x2y2.shape[0]
@@ -91,10 +94,34 @@ def associate(cost, match_thr):
                 matches.append([tdx, ddx])
     return matches
 
-def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, penalty_p, penalty_q, reduce_step, frame_id, d_t=3):
+def compute_association_cost(tracks, dets, iou_sim, iou_dist, frame_id, d_t=3, cost_mode="static", context=None):
+    if cost_mode != "static":
+        logger.warning(
+            "Unsupported TrackTrack cost_mode '%s'; falling back to static association cost. "
+            "TODO: add adaptive association here.",
+            cost_mode,
+        )
+
+    return (
+        0.50 * iou_dist
+        + 0.50 * cos_distance(tracks, dets)
+        + 0.10 * conf_distance(tracks, dets)
+        + 0.05 * angle_distance(tracks, dets, frame_id, d_t)
+    )
+
+def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, penalty_p, penalty_q, reduce_step, frame_id, d_t=3, cost_mode="static", context=None):
     matches, dets = [], dets_high + dets_low + dets_del_high
     iou_sim, iou_dist = iou_distance(tracks, dets)
-    cost = 0.50 * iou_dist + 0.50 * cos_distance(tracks, dets) + 0.10 * conf_distance(tracks, dets) + 0.05 * angle_distance(tracks, dets, frame_id, d_t)
+    cost = compute_association_cost(
+        tracks,
+        dets,
+        iou_sim,
+        iou_dist,
+        frame_id,
+        d_t=d_t,
+        cost_mode=cost_mode,
+        context=context,
+    )
     cost[:, len(dets_high):len(dets_high + dets_low)] += penalty_p
     cost[:, len(dets_high + dets_low):] += penalty_q
     cost[iou_sim <= 0.10] = 1.
