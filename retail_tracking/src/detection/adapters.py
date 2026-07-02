@@ -78,9 +78,10 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
                 detections=np.empty((0, 6), dtype=np.float32),
                 metadata={
                     "num_detections": 0,
-                    "embedding_shape": None,
                     "has_embeddings": False,
-                    "embedding_norm_mean": None,
+                    "embedding_shape": None,
+                    "embedding_source": "none",
+                    "embedding_dim": None,
                 },
             )
 
@@ -88,16 +89,21 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
         raw_dets = res.boxes.data.cpu().numpy()
         dets = np.asarray(raw_dets[:, :6], dtype=np.float32)
         embs = None
+        embedding_source = "none"
         
         # Sequentially evaluate attributes for JDE embedding vectors.
         if hasattr(res, 'embeds') and res.embeds is not None:
             embs = res.embeds.data.cpu().numpy() if hasattr(res.embeds, 'data') else res.embeds.cpu().numpy()
+            embedding_source = "res.embeds"
         elif raw_dets.shape[1] > 6:
             embs = raw_dets[:, 6:]
+            embedding_source = "raw_dets_extra_columns"
         elif hasattr(res, 'embeddings') and res.embeddings is not None:
             embs = res.embeddings.data.cpu().numpy() if hasattr(res.embeddings, 'data') else res.embeddings.cpu().numpy()
+            embedding_source = "res.embeddings"
         elif hasattr(res.boxes, 'embs') and res.boxes.embs is not None:
             embs = res.boxes.embs.data.cpu().numpy() if hasattr(res.boxes.embs, 'data') else res.boxes.embs.cpu().numpy()
+            embedding_source = "res.boxes.embs"
             
         if embs is not None:
             embs = np.asarray(embs, dtype=np.float32)
@@ -109,22 +115,25 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
             logger.warning("Dimension mismatch: Detections (%d) vs Embeddings (%d). Dropping embeddings.", 
                            dets.shape[0], embs.shape[0])
             embs = None
+            embedding_source = "none"
         elif embs is not None:
             # Do not normalize here. Trackers own final embedding normalization because
             # different trackers/backends may have different appearance assumptions.
             pass
 
-        embedding_norm_mean = None
+        metadata = {
+            "num_detections": int(dets.shape[0]),
+            "has_embeddings": embs is not None,
+            "embedding_shape": tuple(embs.shape) if embs is not None else None,
+            "embedding_source": embedding_source,
+            "embedding_dim": int(embs.shape[1]) if embs is not None else None,
+        }
+
         if embs is not None and embs.size > 0:
-            embedding_norm_mean = float(np.linalg.norm(embs, axis=1).mean())
+            metadata["embedding_norm_mean"] = float(np.linalg.norm(embs, axis=1).mean())
 
         return JDEResult(
             detections=dets,
             embeddings=embs,
-            metadata={
-                "num_detections": int(dets.shape[0]),
-                "embedding_shape": tuple(embs.shape) if embs is not None else None,
-                "has_embeddings": embs is not None,
-                "embedding_norm_mean": embedding_norm_mean,
-            },
+            metadata=metadata,
         )

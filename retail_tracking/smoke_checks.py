@@ -126,6 +126,20 @@ class _DummyTracker:
         return np.empty((0, 8), dtype=np.float32)
 
 
+class _CustomFakeDetector:
+    def __init__(self, dets, embs, metadata=None):
+        self.dets = dets
+        self.embs = embs
+        self.metadata = metadata or {}
+
+    def predict(self, frame):
+        return JDEResult(
+            detections=self.dets,
+            embeddings=self.embs,
+            metadata=self.metadata,
+        )
+
+
 def check_jde_result_optional_fields():
     result = JDEResult(
         detections=np.empty((0, 6), dtype=np.float32),
@@ -180,7 +194,10 @@ def check_empty_frame_updates_tracker():
     retail_tracker = RetailTracker.__new__(RetailTracker)
     retail_tracker.detector = _EmptyDetector()
     retail_tracker.tracker = _DummyTracker()
+    retail_tracker.appearance_mode = "auto"
+    retail_tracker.allow_zero_embs = False
     retail_tracker.last_jde_metadata = {}
+    retail_tracker.last_route_metadata = {}
     tracks = retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
     assert tracks.shape == (0, 8)
     assert len(retail_tracker.tracker.updates) == 1
@@ -197,11 +214,80 @@ def check_tracktrack_empty_update():
     assert output.shape == (0, 8)
 
 
+def check_appearance_routing_modes():
+    # 1. JDE route success
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.array([[3.0, 4.0]], dtype=np.float32)
+    meta = {
+        "num_detections": 1,
+        "has_embeddings": True,
+        "embedding_shape": (1, 2),
+        "embedding_source": "res.embeds",
+        "embedding_dim": 2,
+    }
+    detector = _CustomFakeDetector(dets, embs, meta)
+    tracker_wrapper = TrackTrack()
+    
+    retail_tracker = RetailTracker.__new__(RetailTracker)
+    retail_tracker.detector = detector
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "jde"
+    retail_tracker.allow_zero_embs = False
+    retail_tracker.last_jde_metadata = {}
+    retail_tracker.last_route_metadata = {}
+    
+    tracks = retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    assert hasattr(tracker_wrapper, "last_route_metadata")
+    assert tracker_wrapper.last_route_metadata["embedding_route"] == "jde"
+    assert retail_tracker.last_route_metadata["embedding_route"] == "jde"
+    assert retail_tracker.last_route_metadata["used_zero_embeddings"] is False
+    assert retail_tracker.last_jde_metadata["embedding_source"] == "res.embeds"
+    
+    # 2. Missing embeddings in JDE mode
+    detector_no_embs = _CustomFakeDetector(dets, None, {
+        "num_detections": 1,
+        "has_embeddings": False,
+        "embedding_shape": None,
+        "embedding_source": "none",
+        "embedding_dim": None,
+    })
+    tracker_wrapper = TrackTrack()
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.detector = detector_no_embs
+    retail_tracker.appearance_mode = "jde"
+    
+    try:
+        retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+        assert False, "Should have raised RuntimeError"
+    except RuntimeError as e:
+        assert "JDE embeddings are required" in str(e)
+        
+    # 3. None mode
+    tracker_wrapper = TrackTrack()
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "none"
+    tracks = retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    assert retail_tracker.last_route_metadata["used_zero_embeddings"] is True
+    assert retail_tracker.last_route_metadata["embedding_route"] == "none"
+
+    # 4. Auto mode without JDE & ReID
+    tracker_wrapper = TrackTrack()
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "auto"
+    try:
+        retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+        assert False, "Should have raised RuntimeError"
+    except RuntimeError as e:
+        assert "no external ReID model" in str(e)
+
+
 def main() -> None:
     check_jde_result_optional_fields()
     check_embedding_normalization()
     check_empty_frame_updates_tracker()
     check_tracktrack_empty_update()
+    check_appearance_routing_modes()
     print("retail_tracking smoke checks passed")
 
 

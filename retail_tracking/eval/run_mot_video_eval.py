@@ -71,6 +71,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--warmup", dest="warmup", action="store_true", default=True, help="Run one detector warmup pass.")
     parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Skip detector warmup.")
     parser.add_argument("--progress-every", type=int, default=50, help="Console progress update interval in frames.")
+    parser.add_argument("--appearance-mode", type=str, choices=["auto", "jde", "external", "none"], default="auto", help="Appearance routing mode for TrackTrack.")
+    parser.add_argument("--allow-zero-embs", action="store_true", help="Allow zero embeddings fallback if missing.")
     parser.add_argument("--debug-routing", action="store_true", help="Print early-frame detector/embedding routing metadata.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional limit for quick first-N-frame runs.")
     parser.add_argument("--video-out", type=str, default=None, help="Optional visualization video output path.")
@@ -148,6 +150,8 @@ def run_eval() -> None:
             reid_weights=args.reid,
             device=args.device,
             half=use_half,
+            appearance_mode=args.appearance_mode,
+            allow_zero_embs=args.allow_zero_embs,
         )
     except Exception as e:
         logger.error("Initialization failure: %s", e)
@@ -211,16 +215,20 @@ def run_eval() -> None:
                 interval_processing_time += processing_time
 
                 if args.debug_routing and frame_count <= 20:
-                    metadata = getattr(tracker_system, "last_jde_metadata", {}) or {}
+                    jde_meta = getattr(tracker_system, "last_jde_metadata", {}) or {}
+                    route_meta = getattr(tracker_system, "last_route_metadata", {}) or {}
                     logger.info(
-                        "Routing frame %d | detections=%s | tracks=%d | has_embeddings=%s | "
-                        "embedding_shape=%s | embedding_norm_mean=%s",
+                        "ROUTE frame=%d dets=%s has_jde=%s source=%s emb_shape=%s mode=%s route=%s zero=%s relaxed=%s tracks=%d",
                         frame_count,
-                        metadata.get("num_detections"),
+                        jde_meta.get("num_detections"),
+                        jde_meta.get("has_embeddings"),
+                        jde_meta.get("embedding_source", "none"),
+                        route_meta.get("embedding_shape"),
+                        route_meta.get("appearance_mode", "auto"),
+                        route_meta.get("embedding_route", "none"),
+                        route_meta.get("used_zero_embeddings", False),
+                        route_meta.get("num_relaxed_detections", 0),
                         len(tracks),
-                        metadata.get("has_embeddings"),
-                        metadata.get("embedding_shape"),
-                        metadata.get("embedding_norm_mean"),
                     )
 
                 # Format MOTChallenge outputs: frame,id,x,y,w,h,score,-1,-1,-1

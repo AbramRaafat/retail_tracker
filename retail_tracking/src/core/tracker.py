@@ -30,7 +30,9 @@ class RetailTracker:
                  tracker_config: Optional[str] = None,
                  reid_weights: Optional[str] = None,
                  device: str = 'cuda:0',
-                 half: bool = True):
+                 half: bool = True,
+                 appearance_mode: str = "auto",
+                 allow_zero_embs: bool = False):
         """
         Initializes the tracking ecosystem via BoxMOT factory methods.
         
@@ -42,10 +44,18 @@ class RetailTracker:
                           YOLO detector instead of a JDE model.
             device: Compute device mapping for ReID tensor operations.
             half: Whether tracker-owned ReID tensor operations may use half precision.
+            appearance_mode: Appearance routing mode ('auto', 'jde', 'external', 'none').
+            allow_zero_embs: Allow using zero embeddings if JDE/external ReID is unavailable.
         """
+        if appearance_mode == "external" and not reid_weights:
+            raise RuntimeError("--appearance-mode external requires --reid.")
+
         self.tracker_type = tracker_type
         self.detector = detector
+        self.appearance_mode = appearance_mode
+        self.allow_zero_embs = allow_zero_embs
         self.last_jde_metadata = {}
+        self.last_route_metadata = {}
         
         # BoxMOT Factory: Automatically loads default YAMLs if tracker_config is None.
         # Warms up ReID models internally if reid_weights is provided.
@@ -78,17 +88,24 @@ class RetailTracker:
                 relaxed_detections=jde_result.relaxed_detections,
                 relaxed_embeddings=jde_result.relaxed_embeddings,
                 metadata=jde_result.metadata,
+                appearance_mode=self.appearance_mode,
+                allow_zero_embs=self.allow_zero_embs,
             )
 
         embs = jde_result.embeddings
+        if self.appearance_mode in ("external", "none"):
+            embs = None
 
         # Dynamic Routing: 
-        # If JDE embeddings exist, inject them directly to bypass BoxMOT ReID.
-        # If None, BoxMOT utilizes its initialized `reid_weights` to extract them natively.
+        # Appearance routing is explicit. TrackTrack uses JDE embeddings by default.
+        # External ReID fallback is only used when appearance_mode requests it and a ReID backend is available.
         if embs is not None:
             tracker_outputs = self.tracker.update(dets, frame, embs=embs)
         else:
             tracker_outputs = self.tracker.update(dets, frame)
+        
+        if hasattr(self.tracker, "last_route_metadata"):
+            self.last_route_metadata = self.tracker.last_route_metadata
         
         return tracker_outputs if len(tracker_outputs) > 0 else np.empty((0, 8))
 

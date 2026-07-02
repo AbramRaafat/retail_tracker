@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 import numpy as np
 from types import SimpleNamespace
 from boxmot.trackers.basetracker import BaseTracker
@@ -25,6 +26,7 @@ class TrackTrack(BaseTracker):
         self.reid_model = kwargs.get("reid_model")
         self._warned_missing_embs = False
         self._frame_aux = {}
+        self.last_route_metadata = {}
         super().__init__(
             det_thresh=det_thresh,
             max_age=max_age,
@@ -53,11 +55,15 @@ class TrackTrack(BaseTracker):
         relaxed_detections: np.ndarray = None,
         relaxed_embeddings: np.ndarray = None,
         metadata: dict = None,
+        appearance_mode: str = "auto",
+        allow_zero_embs: bool = False,
     ) -> None:
         self._frame_aux = {
             "relaxed_detections": relaxed_detections,
             "relaxed_embeddings": relaxed_embeddings,
             "metadata": metadata or {},
+            "appearance_mode": appearance_mode,
+            "allow_zero_embs": allow_zero_embs,
         }
 
     @staticmethod
@@ -66,6 +72,140 @@ class TrackTrack(BaseTracker):
         if embs.ndim == 1:
             embs = embs.reshape(1, -1)
         return embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12)
+
+    def _extract_external_reid_embeddings(self, img: np.ndarray, dets: np.ndarray) -> Optional[np.ndarray]:
+        if self.reid_model is None:
+            return None
+        
+        if not hasattr(self.reid_model, "get_features"):
+            raise NotImplementedError(
+                "The loaded ReID backend model does not expose a 'get_features' method."
+            )
+            
+        if len(dets) == 0:
+            return np.empty((0, 128), dtype=np.float32)
+
+        h, w = img.shape[:2]
+        clipped_xyxys = []
+        for det in dets:
+            x1, y1, x2, y2 = det[:4]
+            # Clip bounds
+            cx1 = max(0.0, min(float(x1), float(w)))
+            cy1 = max(0.0, min(float(y1), float(h)))
+            cx2 = max(0.0, min(float(x2), float(w)))
+            cy2 = max(0.0, min(float(y2), float(h)))
+            
+            # If invalid (e.g., zero or negative width/height), replace with a safe minimal 1x1 box at bounds
+            if cx2 <= cx1 or cy2 <= cy1:
+                cx1, cy1, cx2, cy2 = 0.0, 0.0, 1.0, 1.0
+                
+            clipped_xyxys.append([cx1, cy1, cx2, cy2])
+            
+        clipped_xyxys = np.array(clipped_xyxys, dtype=np.float32)
+        
+        # Extract features using get_features
+        features = self.reid_model.get_features(clipped_xyxys, img)
+        return features
+
+    def resolve_embeddings(
+        self,
+        dets: np.ndarray,
+        img: np.ndarray,
+        embs: Optional[np.ndarray],
+        appearance_mode: str,
+        allow_zero_embs: bool,
+    ) -> np.ndarray:
+        if len(dets) == 0:
+            return np.empty((0, 128), dtype=np.float32)
+
+        resolved_embs = None
+        embedding_route = "none"
+        used_zero_embs = False
+
+        if appearance_mode == "none":
+            emb_dim = embs.shape[1] if embs is not None else 128
+            resolved_embs = np.zeros((len(dets), emb_dim), dtype=np.float32)
+            embedding_route = "none"
+            used_zero_embs = True
+            if not getattr(self, "_warned_appearance_disabled", False):
+                logger.warning("WARNING: appearance matching disabled; TrackTrack will use zero embeddings. This is for ablation only.")
+                self._warned_appearance_disabled = True
+
+        elif appearance_mode == "jde":
+            if embs is not None:
+                resolved_embs = embs
+                embedding_route = "jde"
+            else:
+                if allow_zero_embs:
+                    resolved_embs = np.zeros((len(dets), 128), dtype=np.float32)
+                    embedding_route = "none"
+                    used_zero_embs = True
+                else:
+                    raise RuntimeError("JDE embeddings are required in 'jde' mode but were not provided by the detector.")
+
+        elif appearance_mode == "auto":
+            if embs is not None:
+                resolved_embs = embs
+                embedding_route = "jde"
+            elif self.reid_model is not None:
+                resolved_embs = self._extract_external_reid_embeddings(img, dets)
+                if resolved_embs is not None and resolved_embs.size > 0:
+                    embedding_route = "external_reid"
+                else:
+                    if allow_zero_embs:
+                        resolved_embs = np.zeros((len(dets), 128), dtype=np.float32)
+                        embedding_route = "none"
+                        used_zero_embs = True
+                    else:
+                        raise RuntimeError(
+                            "JDE embeddings were not returned by the detector and no external ReID model was provided.\n"
+                            "Use --appearance-mode none only for ablation, or provide --reid, or fix JDE embedding extraction."
+                        )
+            else:
+                if allow_zero_embs:
+                    resolved_embs = np.zeros((len(dets), 128), dtype=np.float32)
+                    embedding_route = "none"
+                    used_zero_embs = True
+                else:
+                    raise RuntimeError(
+                        "JDE embeddings were not returned by the detector and no external ReID model was provided.\n"
+                        "Use --appearance-mode none only for ablation, or provide --reid, or fix JDE embedding extraction."
+                    )
+
+        elif appearance_mode == "external":
+            if self.reid_model is not None:
+                resolved_embs = self._extract_external_reid_embeddings(img, dets)
+                if resolved_embs is not None and resolved_embs.size > 0:
+                    embedding_route = "external_reid"
+                else:
+                    if allow_zero_embs:
+                        resolved_embs = np.zeros((len(dets), 128), dtype=np.float32)
+                        embedding_route = "none"
+                        used_zero_embs = True
+                    else:
+                        raise RuntimeError("External ReID extraction failed to return embeddings in 'external' mode.")
+            else:
+                if allow_zero_embs:
+                    resolved_embs = np.zeros((len(dets), 128), dtype=np.float32)
+                    embedding_route = "none"
+                    used_zero_embs = True
+                else:
+                    raise RuntimeError("--appearance-mode external requires --reid.")
+        else:
+            raise ValueError(f"Unknown appearance_mode: {appearance_mode}")
+
+        normalized_embs = self._normalize_embeddings(resolved_embs)
+
+        self.last_route_metadata = {
+            "appearance_mode": appearance_mode,
+            "embedding_route": embedding_route,
+            "embedding_shape": tuple(normalized_embs.shape),
+            "used_zero_embeddings": used_zero_embs,
+            "num_detections": int(len(dets)),
+            "num_relaxed_detections": 0,
+        }
+
+        return normalized_embs
 
     def _prepare_embeddings(self, dets: np.ndarray, embs: np.ndarray) -> np.ndarray:
         if embs is None:
@@ -109,14 +249,37 @@ class TrackTrack(BaseTracker):
         return np.concatenate((relaxed_dets, relaxed_embs), axis=1)
 
     def _update_impl(self, dets: np.ndarray, img: np.ndarray, embs: np.ndarray = None) -> np.ndarray:
+        appearance_mode = self._frame_aux.get("appearance_mode", "auto")
+        allow_zero_embs = self._frame_aux.get("allow_zero_embs", False)
+
         if len(dets) == 0:
             self.tracker.update_without_detections()
+            self.last_route_metadata = {
+                "appearance_mode": appearance_mode,
+                "embedding_route": "none",
+                "embedding_shape": (0, 128),
+                "used_zero_embeddings": False,
+                "num_detections": 0,
+                "num_relaxed_detections": 0,
+            }
             self._frame_aux = {}
             return self.empty_output()
 
+        resolved_embs = self.resolve_embeddings(
+            dets=dets,
+            img=img,
+            embs=embs,
+            appearance_mode=appearance_mode,
+            allow_zero_embs=allow_zero_embs,
+        )
+
         # Format: [x1, y1, x2, y2, conf, cls, emb[0], emb[1]...]
-        formatted_dets = self._format_detections(dets, embs)
+        formatted_dets = np.concatenate((dets, resolved_embs), axis=1)
         formatted_dets_95 = self._format_relaxed_detections(formatted_dets.shape[1] - 6)
+        
+        if hasattr(self, "last_route_metadata"):
+            self.last_route_metadata["num_relaxed_detections"] = int(len(formatted_dets_95))
+
         self._frame_aux = {}
 
         active_tracks = self.tracker.update(formatted_dets, formatted_dets_95)
