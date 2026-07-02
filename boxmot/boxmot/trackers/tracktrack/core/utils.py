@@ -5,18 +5,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 def bbox_overlaps(a_x1y1x2y2, b_x1y1x2y2):
-    num_a, num_b = a_x1y1x2y2.shape[0], b_x1y1x2y2.shape[0]
-    overlaps = np.zeros((num_a, num_b))
-    for n_b in range(num_b):
-        box_area = (b_x1y1x2y2[n_b, 2] - b_x1y1x2y2[n_b, 0] + 1) * (b_x1y1x2y2[n_b, 3] - b_x1y1x2y2[n_b, 1] + 1)
-        for n_a in range(num_a):
-            iw = min(a_x1y1x2y2[n_a, 2], b_x1y1x2y2[n_b, 2]) - max(a_x1y1x2y2[n_a, 0], b_x1y1x2y2[n_b, 0]) + 1
-            if iw > 0:
-                ih = min(a_x1y1x2y2[n_a, 3], b_x1y1x2y2[n_b, 3]) - max(a_x1y1x2y2[n_a, 1], b_x1y1x2y2[n_b, 1]) + 1
-                if ih > 0:
-                    ua = (a_x1y1x2y2[n_a, 2] - a_x1y1x2y2[n_a, 0] + 1) * (a_x1y1x2y2[n_a, 3] - a_x1y1x2y2[n_a, 1] + 1) + box_area - iw * ih
-                    overlaps[n_a, n_b] = iw * ih / ua
-    return overlaps
+    a = np.asarray(a_x1y1x2y2, dtype=np.float64)
+    b = np.asarray(b_x1y1x2y2, dtype=np.float64)
+    num_a, num_b = a.shape[0], b.shape[0]
+    if num_a == 0 or num_b == 0:
+        return np.zeros((num_a, num_b), dtype=np.float64)
+
+    iw = np.minimum(a[:, None, 2], b[None, :, 2]) - np.maximum(a[:, None, 0], b[None, :, 0]) + 1.0
+    ih = np.minimum(a[:, None, 3], b[None, :, 3]) - np.maximum(a[:, None, 1], b[None, :, 1]) + 1.0
+    valid = (iw > 0.0) & (ih > 0.0)
+    inter = np.where(valid, iw * ih, 0.0)
+
+    area_a = (a[:, 2] - a[:, 0] + 1.0) * (a[:, 3] - a[:, 1] + 1.0)
+    area_b = (b[:, 2] - b[:, 0] + 1.0) * (b[:, 3] - b[:, 1] + 1.0)
+    union = area_a[:, None] + area_b[None, :] - inter
+    return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0.0)
 
 def find_deleted_detections(dets, dets_95):
     if len(dets_95) == 0:

@@ -62,6 +62,20 @@ try:
 except ImportError:
     scipy_pkg = types.ModuleType("scipy")
     scipy_linalg_pkg = types.ModuleType("scipy.linalg")
+
+    def _cho_factor(matrix, lower=True, check_finite=False):
+        return np.linalg.cholesky(matrix), True
+
+    def _cho_solve(factor_and_lower, rhs, check_finite=False):
+        chol, lower = factor_and_lower
+        if lower:
+            y = np.linalg.solve(chol, rhs)
+            return np.linalg.solve(chol.T, y)
+        y = np.linalg.solve(chol.T, rhs)
+        return np.linalg.solve(chol, y)
+
+    scipy_linalg_pkg.cho_factor = _cho_factor
+    scipy_linalg_pkg.cho_solve = _cho_solve
     scipy_pkg.linalg = scipy_linalg_pkg
     sys.modules["scipy"] = scipy_pkg
     sys.modules["scipy.linalg"] = scipy_linalg_pkg
@@ -340,6 +354,7 @@ def check_adapter_relaxed_routing():
         assert result.relaxed_detections.shape == (2, 6)
         assert result.relaxed_embeddings.shape == (2, 128)
         assert result.metadata["relaxed_enabled"] is True
+        assert result.metadata["relaxed_source"] == "two-pass"
         assert result.metadata["num_relaxed_detections"] == 2
         assert result.metadata["has_relaxed_embeddings"] is True
         assert result.metadata["relaxed_embedding_shape"] == (2, 128)
@@ -373,6 +388,76 @@ def check_adapter_relaxed_routing():
         
     finally:
         adapters.YOLO = original_yolo
+
+
+def check_adapter_relaxed_single_pass_routing():
+    original_yolo = adapters.YOLO
+    adapters.YOLO = _ConfigurableFakeYOLO
+    try:
+        _ConfigurableFakeYOLO.predict_side_effects = []
+        _ConfigurableFakeYOLO.last_predict_kwargs = []
+
+        dets_superset = np.array(
+            [
+                [0, 0, 10, 10, 0.90, 0],
+                [0, 0, 9, 9, 0.80, 0],
+                [20, 20, 30, 30, 0.05, 0],
+                [40, 40, 50, 50, 0.30, 0],
+            ],
+            dtype=np.float32,
+        )
+        embs_superset = np.stack(
+            [np.full((128,), fill_value=i + 1, dtype=np.float32) for i in range(len(dets_superset))],
+            axis=0,
+        )
+
+        _ConfigurableFakeYOLO.predict_side_effects = [[_FakeResult(dets_superset, embs_superset)]]
+
+        adapter = adapters.UltralyticsJDEAdapter(
+            "unused.pt",
+            device="cpu",
+            half=False,
+            imgsz=640,
+            conf_threshold=0.2,
+            classes=[0],
+            relaxed_enabled=True,
+            relaxed_conf_threshold=0.03,
+            relaxed_iou_threshold=0.95,
+            normal_iou_threshold=0.70,
+            relaxed_source="single-pass",
+        )
+        result = adapter.predict(np.zeros((32, 32, 3), dtype=np.uint8))
+
+        assert len(_ConfigurableFakeYOLO.last_predict_kwargs) == 1
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[0]["conf"] == 0.03
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[0]["iou"] == 0.95
+        assert result.metadata["relaxed_source"] == "single-pass"
+        assert result.detections.shape == (2, 6)
+        assert result.relaxed_detections.shape == (4, 6)
+        assert result.embeddings.shape == (2, 128)
+        assert result.relaxed_embeddings.shape == (4, 128)
+        assert np.allclose(result.detections[:, 4], np.array([0.90, 0.30], dtype=np.float32))
+        assert np.allclose(result.embeddings[:, 0], np.array([1.0, 4.0], dtype=np.float32))
+        assert result.metadata["num_detections"] == 2
+        assert result.metadata["num_relaxed_detections"] == 4
+        assert "software_split_nms_ms" in result.metadata["timing_ms"]
+    finally:
+        adapters.YOLO = original_yolo
+
+
+def check_tracktrack_bbox_overlaps_vectorized_values():
+    from boxmot.trackers.tracktrack.core.utils import bbox_overlaps
+
+    boxes_a = np.array([[0, 0, 9, 9], [20, 20, 29, 29]], dtype=np.float32)
+    boxes_b = np.array([[0, 0, 9, 9], [5, 5, 14, 14], [50, 50, 60, 60]], dtype=np.float32)
+    overlaps = bbox_overlaps(boxes_a, boxes_b)
+
+    expected_partial = 25.0 / (100.0 + 100.0 - 25.0)
+    assert overlaps.shape == (2, 3)
+    assert np.isclose(overlaps[0, 0], 1.0)
+    assert np.isclose(overlaps[0, 1], expected_partial)
+    assert np.isclose(overlaps[0, 2], 0.0)
+    assert np.isclose(overlaps[1, 0], 0.0)
 
 
 def check_tracktrack_strict_jde_relaxed_error():
@@ -763,6 +848,8 @@ def main() -> None:
     check_tracktrack_empty_update()
     check_appearance_routing_modes()
     check_adapter_relaxed_routing()
+    check_adapter_relaxed_single_pass_routing()
+    check_tracktrack_bbox_overlaps_vectorized_values()
     check_tracktrack_strict_jde_relaxed_error()
     check_tracktrack_strict_jde_relaxed_success()
     check_association_audit_logging()

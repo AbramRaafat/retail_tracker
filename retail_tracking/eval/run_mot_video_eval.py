@@ -11,6 +11,7 @@ Example usage:
 """
 
 import argparse
+import csv
 import logging
 import time
 from pathlib import Path
@@ -77,6 +78,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--relaxed-dets", action="store_true", help="Enable relaxed detections recovery.")
     parser.add_argument("--relaxed-conf", type=float, default=0.03, help="Relaxed confidence threshold.")
     parser.add_argument("--relaxed-iou", type=float, default=0.95, help="Relaxed NMS IoU threshold.")
+    parser.add_argument(
+        "--relaxed-source",
+        type=str,
+        choices=["two-pass", "single-pass"],
+        default="two-pass",
+        help="How relaxed detections are produced. 'two-pass' preserves the reference behavior; 'single-pass' runs one relaxed superset forward and derives normal detections with software NMS.",
+    )
+    parser.add_argument("--timing-profile", type=str, default=None, help="Optional CSV path for per-frame runtime stage profiling.")
     parser.add_argument("--debug-routing", action="store_true", help="Print early-frame detector/embedding routing metadata.")
     parser.add_argument("--assoc-debug-csv", type=str, default=None, help="Path to association audit CSV output file.")
     parser.add_argument("--assoc-debug-max-frames", type=int, default=None, help="Optional frame limit for association audit logging.")
@@ -119,6 +128,7 @@ def run_eval() -> None:
     logger.info("Effective half precision: %s", use_half)
     logger.info("Detector imgsz: %s", args.imgsz)
     logger.info("Detector confidence threshold: %.3f", args.conf)
+    logger.info("Relaxed detection source: %s", args.relaxed_source)
 
     if requested_cuda and not cuda_available:
         logger.error(
@@ -153,6 +163,8 @@ def run_eval() -> None:
             relaxed_conf_threshold=args.relaxed_conf,
             relaxed_iou_threshold=args.relaxed_iou,
             normal_iou_threshold=args.normal_iou,
+            relaxed_source=args.relaxed_source,
+            profile_timing=args.timing_profile is not None,
         )
         tracker_system = RetailTracker(
             detector=model_adapter,
@@ -166,6 +178,7 @@ def run_eval() -> None:
             assoc_debug_csv=args.assoc_debug_csv,
             assoc_debug_max_frames=args.assoc_debug_max_frames,
             assoc_debug_summary=args.assoc_debug_summary,
+            profile_timing=args.timing_profile is not None,
         )
     except Exception as e:
         logger.error("Initialization failure: %s", e)
@@ -204,6 +217,28 @@ def run_eval() -> None:
     total_processing_time = 0.0
     interval_processing_time = 0.0
     cuda_timing_active = requested_cuda and cuda_available
+    timing_file = None
+    timing_writer = None
+    if args.timing_profile:
+        Path(args.timing_profile).parent.mkdir(parents=True, exist_ok=True)
+        timing_file = open(args.timing_profile, "w", newline="", encoding="utf-8")
+        timing_writer = csv.DictWriter(
+            timing_file,
+            fieldnames=[
+                "frame_id",
+                "detector_total_ms",
+                "detector_normal_ms",
+                "detector_relaxed_ms",
+                "detector_superset_ms",
+                "software_split_nms_ms",
+                "tracker_update_ms",
+                "total_frame_processing_ms",
+                "num_normal_detections",
+                "num_relaxed_detections",
+                "num_output_tracks",
+            ],
+        )
+        timing_writer.writeheader()
 
     try:
         with open(args.mot_out, "w", encoding="utf-8") as mot_file:
@@ -227,6 +262,26 @@ def run_eval() -> None:
                 processing_time = time.perf_counter() - start_time
                 total_processing_time += processing_time
                 interval_processing_time += processing_time
+
+                if timing_writer is not None:
+                    jde_meta = getattr(tracker_system, "last_jde_metadata", {}) or {}
+                    route_meta = getattr(tracker_system, "last_route_metadata", {}) or {}
+                    timing_meta = getattr(tracker_system, "last_timing_metadata", {}) or {}
+                    timing_writer.writerow(
+                        {
+                            "frame_id": frame_count,
+                            "detector_total_ms": f"{timing_meta.get('detector_total_ms', 0.0):.4f}",
+                            "detector_normal_ms": f"{timing_meta.get('detector_normal_ms', 0.0):.4f}",
+                            "detector_relaxed_ms": f"{timing_meta.get('detector_relaxed_ms', 0.0):.4f}",
+                            "detector_superset_ms": f"{timing_meta.get('detector_superset_ms', 0.0):.4f}",
+                            "software_split_nms_ms": f"{timing_meta.get('software_split_nms_ms', 0.0):.4f}",
+                            "tracker_update_ms": f"{timing_meta.get('tracker_update_ms', 0.0):.4f}",
+                            "total_frame_processing_ms": f"{processing_time * 1000.0:.4f}",
+                            "num_normal_detections": int(jde_meta.get("num_detections", 0) or 0),
+                            "num_relaxed_detections": int(route_meta.get("num_relaxed_detections", 0) or 0),
+                            "num_output_tracks": len(tracks),
+                        }
+                    )
 
                 if args.debug_routing and frame_count <= 20:
                     jde_meta = getattr(tracker_system, "last_jde_metadata", {}) or {}
@@ -292,6 +347,8 @@ def run_eval() -> None:
         cap.release()
         if out is not None:
             out.release()
+        if timing_file is not None:
+            timing_file.close()
         if args.display:
             cv2.destroyAllWindows()
         if 'tracker_system' in locals() and hasattr(tracker_system, "tracker"):
@@ -307,6 +364,8 @@ def run_eval() -> None:
     logger.info("Total wall time: %.3fs", total_wall_time)
     logger.info("Average FPS: %.2f", avg_fps)
     logger.info("MOT Challenge format predictions written to: %s", args.mot_out)
+    if args.timing_profile:
+        logger.info("Timing profile CSV written to: %s", args.timing_profile)
     if args.video_out:
         logger.info("Visualization video saved to: %s", args.video_out)
 

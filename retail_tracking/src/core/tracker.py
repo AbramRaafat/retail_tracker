@@ -2,6 +2,7 @@ import cv2
 import logging
 import numpy as np
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,7 +36,8 @@ class RetailTracker:
                  allow_zero_embs: bool = False,
                  assoc_debug_csv: Optional[str] = None,
                  assoc_debug_max_frames: Optional[int] = None,
-                 assoc_debug_summary: Optional[str] = None):
+                 assoc_debug_summary: Optional[str] = None,
+                 profile_timing: bool = False):
         """
         Initializes the tracking ecosystem via BoxMOT factory methods.
         
@@ -52,6 +54,7 @@ class RetailTracker:
             assoc_debug_csv: Optional path for association debugging output.
             assoc_debug_max_frames: Max frames to record for association debugging.
             assoc_debug_summary: Optional path for association summary output.
+            profile_timing: Record lightweight per-frame detector/tracker timings.
         """
         if appearance_mode == "external" and not reid_weights:
             raise RuntimeError("--appearance-mode external requires --reid.")
@@ -60,8 +63,10 @@ class RetailTracker:
         self.detector = detector
         self.appearance_mode = appearance_mode
         self.allow_zero_embs = allow_zero_embs
+        self.profile_timing = profile_timing
         self.last_jde_metadata = {}
         self.last_route_metadata = {}
+        self.last_timing_metadata = {}
         
         # BoxMOT Factory: Automatically loads default YAMLs if tracker_config is None.
         # Warms up ReID models internally if reid_weights is provided.
@@ -90,7 +95,12 @@ class RetailTracker:
         """
         Executes detector inference and routes state updates.
         """
+        profile_timing = getattr(self, "profile_timing", False)
+        process_start = time.perf_counter() if profile_timing else None
+
+        detector_start = time.perf_counter() if profile_timing else None
         jde_result = self.detector.predict(frame)
+        detector_total_ms = ((time.perf_counter() - detector_start) * 1000.0) if profile_timing else 0.0
         self.last_jde_metadata = jde_result.metadata or {}
 
         dets = jde_result.detections
@@ -113,13 +123,27 @@ class RetailTracker:
         # Dynamic Routing: 
         # Appearance routing is explicit. TrackTrack uses JDE embeddings by default.
         # External ReID fallback is only used when appearance_mode requests it and a ReID backend is available.
+        tracker_start = time.perf_counter() if profile_timing else None
         if embs is not None:
             tracker_outputs = self.tracker.update(dets, frame, embs=embs)
         else:
             tracker_outputs = self.tracker.update(dets, frame)
+        tracker_update_ms = ((time.perf_counter() - tracker_start) * 1000.0) if profile_timing else 0.0
         
         if hasattr(self.tracker, "last_route_metadata"):
             self.last_route_metadata = self.tracker.last_route_metadata
+
+        if profile_timing:
+            detector_timing = getattr(self.detector, "last_timing", {}) or {}
+            self.last_timing_metadata = {
+                "detector_total_ms": detector_total_ms,
+                "detector_normal_ms": float(detector_timing.get("detector_normal_ms", 0.0) or 0.0),
+                "detector_relaxed_ms": float(detector_timing.get("detector_relaxed_ms", 0.0) or 0.0),
+                "detector_superset_ms": float(detector_timing.get("detector_superset_ms", 0.0) or 0.0),
+                "software_split_nms_ms": float(detector_timing.get("software_split_nms_ms", 0.0) or 0.0),
+                "tracker_update_ms": tracker_update_ms,
+                "process_frame_ms": (time.perf_counter() - process_start) * 1000.0,
+            }
         
         return tracker_outputs if len(tracker_outputs) > 0 else np.empty((0, 8))
 
