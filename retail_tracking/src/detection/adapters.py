@@ -1,9 +1,15 @@
 import logging
+from contextlib import nullcontext
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List
 import numpy as np
 from ultralytics import YOLO
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional runtime dependency in smoke contexts
+    torch = None
 
 logger = logging.getLogger(__name__)
 
@@ -30,25 +36,57 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
     and standard YOLO detection models (returning None for embeddings).
     """
     
-    def __init__(self, weights_path: str, conf_threshold: float = 0.35, classes: Optional[List[int]] = None):
+    def __init__(
+        self,
+        weights_path: str,
+        device: str = "cuda:0",
+        half: bool = True,
+        imgsz: int = 1280,
+        conf_threshold: float = 0.35,
+        classes: Optional[List[int]] = None,
+    ):
         self.detector = YOLO(weights_path)
+        self.device = device
+        self.half = half
+        self.imgsz = imgsz
         self.conf_threshold = conf_threshold
         self.classes = classes if classes is not None else [0]
-        
+
+    def warmup(self, frame_shape: tuple[int, int, int] | None = None) -> None:
+        shape = frame_shape if frame_shape is not None else (640, 640, 3)
+        dummy = np.zeros(shape, dtype=np.uint8)
+        try:
+            self.predict(dummy)
+        except Exception as exc:
+            logger.warning("Detector warmup failed; continuing without warmup: %s", exc)
+
     def predict(self, frame: np.ndarray) -> JDEResult:
-        results = self.detector.predict(
-            frame, 
-            classes=self.classes, 
-            conf=self.conf_threshold, 
-            verbose=False
-        )
+        context = torch.inference_mode() if torch is not None else nullcontext()
+        with context:
+            results = self.detector.predict(
+                frame,
+                classes=self.classes,
+                conf=self.conf_threshold,
+                device=self.device,
+                half=self.half,
+                imgsz=self.imgsz,
+                verbose=False,
+            )
         
         if not results or len(results[0].boxes) == 0:
-            return JDEResult(detections=np.empty((0, 6)))
+            return JDEResult(
+                detections=np.empty((0, 6), dtype=np.float32),
+                metadata={
+                    "num_detections": 0,
+                    "embedding_shape": None,
+                    "has_embeddings": False,
+                    "embedding_norm_mean": None,
+                },
+            )
 
         res = results[0]
         raw_dets = res.boxes.data.cpu().numpy()
-        dets = raw_dets[:, :6]
+        dets = np.asarray(raw_dets[:, :6], dtype=np.float32)
         embs = None
         
         # Sequentially evaluate attributes for JDE embedding vectors.
@@ -76,4 +114,17 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
             # different trackers/backends may have different appearance assumptions.
             pass
 
-        return JDEResult(detections=dets, embeddings=embs)
+        embedding_norm_mean = None
+        if embs is not None and embs.size > 0:
+            embedding_norm_mean = float(np.linalg.norm(embs, axis=1).mean())
+
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            metadata={
+                "num_detections": int(dets.shape[0]),
+                "embedding_shape": tuple(embs.shape) if embs is not None else None,
+                "has_embeddings": embs is not None,
+                "embedding_norm_mean": embedding_norm_mean,
+            },
+        )

@@ -5,6 +5,7 @@
 /weights/YOLO11s_JDE-CHMOT17-64b-100e_TBHS_m075_1280px.onnx
 /weights/YOLO11s_JDE-CHMOT17-64b-100e_TBHS_m075_1280px.onnx.data
 /weights/
+/outputs/
 
 # Python cache files
 __pycache__/

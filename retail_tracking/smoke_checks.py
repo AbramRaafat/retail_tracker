@@ -96,10 +96,13 @@ class _FakeResult:
 
 
 class _FakeYOLO:
+    last_predict_kwargs = None
+
     def __init__(self, *args, **kwargs):
         pass
 
     def predict(self, *args, **kwargs):
+        _FakeYOLO.last_predict_kwargs = kwargs
         dets = np.array([[0, 0, 10, 10, 0.9, 0], [20, 20, 30, 30, 0.8, 0]], dtype=np.float32)
         embs = np.array([[3, 4], [0, 2]], dtype=np.float32)
         return [_FakeResult(dets, embs)]
@@ -138,13 +141,31 @@ def check_embedding_normalization():
     original_yolo = adapters.YOLO
     adapters.YOLO = _FakeYOLO
     try:
-        adapter = adapters.UltralyticsJDEAdapter("unused.pt")
+        adapter = adapters.UltralyticsJDEAdapter(
+            "unused.pt",
+            device="cpu",
+            half=False,
+            imgsz=640,
+            conf_threshold=0.2,
+            classes=[0],
+        )
         result = adapter.predict(np.zeros((32, 32, 3), dtype=np.uint8))
     finally:
         adapters.YOLO = original_yolo
 
+    assert adapter.device == "cpu"
+    assert adapter.half is False
+    assert adapter.imgsz == 640
+    assert _FakeYOLO.last_predict_kwargs["device"] == "cpu"
+    assert _FakeYOLO.last_predict_kwargs["half"] is False
+    assert _FakeYOLO.last_predict_kwargs["imgsz"] == 640
+    assert _FakeYOLO.last_predict_kwargs["conf"] == 0.2
+
     norms = np.linalg.norm(result.embeddings, axis=1)
     assert result.embeddings.dtype == np.float32
+    assert result.metadata["num_detections"] == 2
+    assert result.metadata["embedding_shape"] == (2, 2)
+    assert result.metadata["has_embeddings"] is True
     # Verify raw embeddings are NOT normalized (norm of [3,4] is 5, norm of [0,2] is 2)
     assert np.allclose(norms, np.array([5.0, 2.0], dtype=np.float32))
 
@@ -159,10 +180,12 @@ def check_empty_frame_updates_tracker():
     retail_tracker = RetailTracker.__new__(RetailTracker)
     retail_tracker.detector = _EmptyDetector()
     retail_tracker.tracker = _DummyTracker()
+    retail_tracker.last_jde_metadata = {}
     tracks = retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
     assert tracks.shape == (0, 8)
     assert len(retail_tracker.tracker.updates) == 1
     assert retail_tracker.tracker.updates[0][0].shape == (0, 6)
+    assert retail_tracker.last_jde_metadata == {}
 
 
 def check_tracktrack_empty_update():

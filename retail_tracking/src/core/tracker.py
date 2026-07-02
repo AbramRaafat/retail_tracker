@@ -29,7 +29,8 @@ class RetailTracker:
                  tracker_type: str = 'tracktrack', 
                  tracker_config: Optional[str] = None,
                  reid_weights: Optional[str] = None,
-                 device: str = 'cuda:0'):
+                 device: str = 'cuda:0',
+                 half: bool = True):
         """
         Initializes the tracking ecosystem via BoxMOT factory methods.
         
@@ -40,9 +41,11 @@ class RetailTracker:
             reid_weights: Path to external ReID model. Required if utilizing a standard 
                           YOLO detector instead of a JDE model.
             device: Compute device mapping for ReID tensor operations.
+            half: Whether tracker-owned ReID tensor operations may use half precision.
         """
         self.tracker_type = tracker_type
         self.detector = detector
+        self.last_jde_metadata = {}
         
         # BoxMOT Factory: Automatically loads default YAMLs if tracker_config is None.
         # Warms up ReID models internally if reid_weights is provided.
@@ -54,7 +57,7 @@ class RetailTracker:
                 tracker_config=tracker_config,
                 reid_weights=Path(reid_weights) if reid_weights else None,
                 device=device,
-                half=True
+                half=half
             )
         except Exception as e:
             raise RuntimeError(f"Failed to instantiate tracker '{tracker_type}': {e}")
@@ -64,6 +67,7 @@ class RetailTracker:
         Executes detector inference and routes state updates.
         """
         jde_result = self.detector.predict(frame)
+        self.last_jde_metadata = jde_result.metadata or {}
 
         dets = jde_result.detections
         if dets is None or dets.shape[0] == 0:
