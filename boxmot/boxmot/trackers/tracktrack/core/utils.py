@@ -190,7 +190,9 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
                 best_det_index = best_d
                 best_final_cost = float(track_costs[best_d])
                 
-                if best_d < len(dets_high):
+                if association_stage == "relaxed_recovery":
+                    best_det_tier = "deleted_high"
+                elif best_d < len(dets_high):
                     best_det_tier = "high"
                 elif best_d < len(dets_high) + len(dets_low):
                     best_det_tier = "low"
@@ -230,7 +232,9 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
             if matched:
                 matched_d = int(matched_d_map[t])
                 matched_det_index = matched_d
-                if matched_d < len(dets_high):
+                if association_stage == "relaxed_recovery":
+                    matched_det_tier = "deleted_high"
+                elif matched_d < len(dets_high):
                     matched_det_tier = "high"
                 elif matched_d < len(dets_high) + len(dets_low):
                     matched_det_tier = "low"
@@ -253,9 +257,24 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
                 matched_conf_dist = 1.0
                 matched_angle_dist = 1.0
 
+            recovered_by_deleted_high = False
+            feature_update_frozen = False
+            
+            if matched and (matched_det_tier == "deleted_high" or association_stage == "relaxed_recovery"):
+                recovered_by_deleted_high = True
+                mode = getattr(context.args, "relaxed_association_mode", "recovery_only")
+                if mode == "recovery_only":
+                    if getattr(context.args, "relaxed_recovery_freeze_feature_update", True):
+                        feature_update_frozen = True
+
+            if association_stage == "relaxed_recovery":
+                stage_val = "relaxed_recovery_lost" if track.state == 2 else "relaxed_recovery_unmatched_tracked"
+            else:
+                stage_val = association_stage
+
             row = {
                 "frame_id": int(frame_id),
-                "association_stage": association_stage,
+                "association_stage": stage_val,
                 "track_index": int(t),
                 "track_id": int(track.track_id),
                 "track_state": track_state,
@@ -287,7 +306,9 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
                 "matched_angle_dist": float(matched_angle_dist),
                 "best_normal_det_index": int(best_normal_det_index),
                 "best_normal_det_tier": best_normal_det_tier,
-                "best_normal_final_cost": float(best_normal_final_cost)
+                "best_normal_final_cost": float(best_normal_final_cost),
+                "recovered_by_deleted_high": bool(recovered_by_deleted_high),
+                "feature_update_frozen": bool(feature_update_frozen)
             }
             audit_writer.write_row(row)
 

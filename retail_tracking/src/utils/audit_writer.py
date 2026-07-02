@@ -27,7 +27,8 @@ class AssociationAuditWriter:
             "best_angle_dist", "best_blocked_by_iou_gate", "matched", "matched_det_index",
             "matched_det_tier", "matched_det_score", "matched_final_cost", "matched_iou_sim",
             "matched_cos_dist", "matched_conf_dist", "matched_angle_dist",
-            "best_normal_det_index", "best_normal_det_tier", "best_normal_final_cost"
+            "best_normal_det_index", "best_normal_det_tier", "best_normal_final_cost",
+            "recovered_by_deleted_high", "feature_update_frozen"
         ]
         
         self.writer = csv.DictWriter(self.file, fieldnames=self.headers)

@@ -64,9 +64,10 @@ class Track(object):
             self.mean[6] = self.mean[7] = 0
         self.mean, self.covariance = self.kalman_filter.predict(self.mean, self.covariance)
 
-    def update(self, frame_id, detection):
+    def update(self, frame_id, detection, freeze_feature_update=False):
         self.mean, self.covariance = self.kalman_filter.update(self.mean, self.covariance, detection.cxcywh.copy(), detection.score)
-        self.update_features(detection.feat.copy(), detection.score)
+        if not freeze_feature_update:
+            self.update_features(detection.feat.copy(), detection.score)
         self.history[frame_id] = [detection.box.copy(), detection.score, self.mean.copy(), self.covariance.copy(), self.feat.copy()]
         self.velocity = np.zeros((4, 2))
         for d_t in range(1, self.delta_t + 1):

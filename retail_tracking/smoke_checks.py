@@ -572,6 +572,190 @@ def check_association_audit_logging():
         pass
 
 
+def check_relaxed_recovery_new_tracks_restriction():
+    # Setup 1 normal detection and 1 relaxed detection (non-overlapping)
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.ones((1, 128), dtype=np.float32)
+    
+    relaxed_dets = np.array([[100, 100, 110, 110, 0.85, 0]], dtype=np.float32)
+    relaxed_embs = np.ones((1, 128), dtype=np.float32)
+    
+    detector = _CustomFakeDetector(dets, embs, {
+        "num_detections": 1,
+        "has_embeddings": True,
+        "relaxed_enabled": True,
+        "num_relaxed_detections": 1,
+    })
+    
+    def predict_mock(frame):
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            relaxed_detections=relaxed_dets,
+            relaxed_embeddings=relaxed_embs,
+            metadata=detector.metadata,
+        )
+    detector.predict = predict_mock
+    
+    # 1. Recovery_only mode
+    tracker_wrapper_rec = TrackTrack(relaxed_association_mode="recovery_only")
+    retail_tracker_rec = RetailTracker.__new__(RetailTracker)
+    retail_tracker_rec.detector = detector
+    retail_tracker_rec.tracker = tracker_wrapper_rec
+    retail_tracker_rec.appearance_mode = "jde"
+    retail_tracker_rec.allow_zero_embs = False
+    
+    retail_tracker_rec.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    # Should only initialize 1 track (normal one)
+    assert len(tracker_wrapper_rec.tracker.tracks) == 1, f"Expected 1 track in recovery_only mode, but got {len(tracker_wrapper_rec.tracker.tracks)}"
+    
+    # 2. Original_pool mode
+    tracker_wrapper_orig = TrackTrack(relaxed_association_mode="original_pool")
+    retail_tracker_orig = RetailTracker.__new__(RetailTracker)
+    retail_tracker_orig.detector = detector
+    retail_tracker_orig.tracker = tracker_wrapper_orig
+    retail_tracker_orig.appearance_mode = "jde"
+    retail_tracker_orig.allow_zero_embs = False
+    
+    retail_tracker_orig.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    # SHOULD also initialize 1 track (since deleted_high cannot initialize new tracks in either mode)
+    assert len(tracker_wrapper_orig.tracker.tracks) == 1, f"Expected 1 track in original_pool mode, but got {len(tracker_wrapper_orig.tracker.tracks)}"
+
+
+def check_relaxed_recovery_reduces_deleted_high_to_tracked():
+    # Frame 1: 2 normal dets
+    dets_f1 = np.array([[0, 0, 10, 10, 0.9, 0], [100, 100, 110, 110, 0.9, 0]], dtype=np.float32)
+    embs_f1 = np.ones((2, 128), dtype=np.float32)
+
+    # Frame 2: 2 normal dets
+    dets_f2 = np.array([[0, 0, 10, 10, 0.9, 0], [100, 100, 110, 110, 0.9, 0]], dtype=np.float32)
+    embs_f2 = np.ones((2, 128), dtype=np.float32)
+
+    # Frame 3: 1 normal det + 1 relaxed det
+    dets_f3 = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs_f3 = np.ones((1, 128), dtype=np.float32)
+    relaxed_dets_f3 = np.array([[102, 102, 112, 112, 0.85, 0]], dtype=np.float32)
+    relaxed_embs_f3 = np.ones((1, 128), dtype=np.float32)
+
+    class FrameSequenceFakeDetector:
+        def __init__(self):
+            self.frame_count = 0
+            self.metadata = {
+                "num_detections": 2,
+                "has_embeddings": True,
+                "relaxed_enabled": True,
+            }
+            
+        def predict(self, frame):
+            self.frame_count += 1
+            if self.frame_count == 1:
+                return JDEResult(
+                    detections=dets_f1,
+                    embeddings=embs_f1,
+                    relaxed_detections=np.empty((0, 6), dtype=np.float32),
+                    relaxed_embeddings=None,
+                    metadata=self.metadata,
+                )
+            elif self.frame_count == 2:
+                return JDEResult(
+                    detections=dets_f2,
+                    embeddings=embs_f2,
+                    relaxed_detections=np.empty((0, 6), dtype=np.float32),
+                    relaxed_embeddings=None,
+                    metadata=self.metadata,
+                )
+            else:
+                return JDEResult(
+                    detections=dets_f3,
+                    embeddings=embs_f3,
+                    relaxed_detections=relaxed_dets_f3,
+                    relaxed_embeddings=relaxed_embs_f3,
+                    metadata=self.metadata,
+                )
+
+    # 1. Test in recovery_only mode:
+    detector_rec = FrameSequenceFakeDetector()
+    tracker_wrapper_rec = TrackTrack(
+        min_hits=1,
+        relaxed_association_mode="recovery_only",
+        relaxed_recovery_for_unmatched_tracked=False
+    )
+    retail_tracker_rec = RetailTracker.__new__(RetailTracker)
+    retail_tracker_rec.detector = detector_rec
+    retail_tracker_rec.tracker = tracker_wrapper_rec
+    retail_tracker_rec.appearance_mode = "jde"
+    retail_tracker_rec.allow_zero_embs = False
+    
+    retail_tracker_rec.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 1
+    retail_tracker_rec.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 2
+    tracks_rec = retail_tracker_rec.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 3
+    # track 2 is not matched because it is unmatched Tracked (not Lost)
+    assert len(tracks_rec) == 1, f"Expected 1 track in recovery_only, got {len(tracks_rec)}"
+    
+    # 2. Test in original_pool mode:
+    detector_orig = FrameSequenceFakeDetector()
+    tracker_wrapper_orig = TrackTrack(
+        min_hits=1,
+        relaxed_association_mode="original_pool"
+    )
+    retail_tracker_orig = RetailTracker.__new__(RetailTracker)
+    retail_tracker_orig.detector = detector_orig
+    retail_tracker_orig.tracker = tracker_wrapper_orig
+    retail_tracker_orig.appearance_mode = "jde"
+    retail_tracker_orig.allow_zero_embs = False
+    
+    retail_tracker_orig.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 1
+    retail_tracker_orig.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 2
+    tracks_orig = retail_tracker_orig.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)) # Frame 3
+    # track 2 is matched to relaxed det in original pool
+    assert len(tracks_orig) == 2, f"Expected 2 tracks in original_pool, got {len(tracks_orig)}"
+
+
+def check_no_relaxed_detections_identical_behavior():
+    # Only normal detections exist, no relaxed detections
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.ones((1, 128), dtype=np.float32)
+    
+    detector = _CustomFakeDetector(dets, embs, {
+        "num_detections": 1,
+        "has_embeddings": True,
+        "relaxed_enabled": False,
+        "num_relaxed_detections": 0,
+    })
+    
+    def predict_mock(frame):
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            relaxed_detections=np.empty((0, 6), dtype=np.float32),
+            relaxed_embeddings=None,
+            metadata=detector.metadata,
+        )
+    detector.predict = predict_mock
+    
+    # 1. Recovery_only mode
+    tracker_wrapper_rec = TrackTrack(relaxed_association_mode="recovery_only")
+    retail_tracker_rec = RetailTracker.__new__(RetailTracker)
+    retail_tracker_rec.detector = detector
+    retail_tracker_rec.tracker = tracker_wrapper_rec
+    retail_tracker_rec.appearance_mode = "jde"
+    retail_tracker_rec.allow_zero_embs = False
+    
+    tracks_rec = retail_tracker_rec.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    # 2. Original_pool mode
+    tracker_wrapper_orig = TrackTrack(relaxed_association_mode="original_pool")
+    retail_tracker_orig = RetailTracker.__new__(RetailTracker)
+    retail_tracker_orig.detector = detector
+    retail_tracker_orig.tracker = tracker_wrapper_orig
+    retail_tracker_orig.appearance_mode = "jde"
+    retail_tracker_orig.allow_zero_embs = False
+    
+    tracks_orig = retail_tracker_orig.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    np.testing.assert_array_equal(tracks_rec, tracks_orig, err_msg="No relaxed detections behavior differ between modes")
+
+
 def main() -> None:
     check_jde_result_optional_fields()
     check_embedding_normalization()
@@ -582,6 +766,9 @@ def main() -> None:
     check_tracktrack_strict_jde_relaxed_error()
     check_tracktrack_strict_jde_relaxed_success()
     check_association_audit_logging()
+    check_relaxed_recovery_new_tracks_restriction()
+    check_relaxed_recovery_reduces_deleted_high_to_tracked()
+    check_no_relaxed_detections_identical_behavior()
     print("retail_tracking smoke checks passed")
 
 

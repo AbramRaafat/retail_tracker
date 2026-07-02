@@ -21,6 +21,13 @@ class TrackTrack(BaseTracker):
         tai_thr: float = 0.4,
         init_thr: float = 0.6,
         cost_mode: str = "static",
+        relaxed_association_mode: str = "recovery_only",
+        relaxed_recovery_enabled: bool = True,
+        relaxed_recovery_for_lost: bool = True,
+        relaxed_recovery_for_unmatched_tracked: bool = False,
+        relaxed_recovery_match_thr: float = 0.55,
+        relaxed_recovery_penalty: float = 0.40,
+        relaxed_recovery_freeze_feature_update: bool = True,
         **kwargs,
     ):
         self.reid_model = kwargs.get("reid_model")
@@ -46,7 +53,14 @@ class TrackTrack(BaseTracker):
             init_thr=init_thr,
             min_len=min_hits,
             cost_mode=cost_mode,
-            data_path="Live"
+            data_path="Live",
+            relaxed_association_mode=relaxed_association_mode,
+            relaxed_recovery_enabled=relaxed_recovery_enabled,
+            relaxed_recovery_for_lost=relaxed_recovery_for_lost,
+            relaxed_recovery_for_unmatched_tracked=relaxed_recovery_for_unmatched_tracked,
+            relaxed_recovery_match_thr=relaxed_recovery_match_thr,
+            relaxed_recovery_penalty=relaxed_recovery_penalty,
+            relaxed_recovery_freeze_feature_update=relaxed_recovery_freeze_feature_update,
         )
         self.tracker = CoreTrackTrack(tracktrack_args)
 

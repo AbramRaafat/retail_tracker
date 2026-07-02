@@ -40,8 +40,11 @@ def analyze_audit_csv(csv_path: str, out_json: str, out_md: str) -> None:
     # deleted_high-to-lost vs deleted_high-to-tracked counts
     deleted_high_to_lost = 0
     deleted_high_to_tracked = 0
-    possible_stealing_cases = 0
+    deleted_high_with_valid_normal_candidate = 0
     close_margin_stealing_cases = 0
+    gaps = []
+    better_count = 0
+    within_005_count = 0
     
     for row in rows:
         matched = row["matched"].lower() == "true"
@@ -54,23 +57,38 @@ def analyze_audit_csv(csv_path: str, out_json: str, out_md: str) -> None:
             elif track_state == "Tracked":
                 deleted_high_to_tracked += 1
                 
-            # Possible stealing: matched deleted_high but normal candidate was also available
+            # Valid normal candidate: best_normal_det_tier in ('high', 'low') and cost < 1.0
             best_normal_tier = row.get("best_normal_det_tier", "none")
             best_normal_cost_str = row.get("best_normal_final_cost", "1.0")
             best_normal_cost = float(best_normal_cost_str) if best_normal_cost_str else 1.0
             
             if best_normal_tier in ("high", "low") and best_normal_cost < 1.0:
-                possible_stealing_cases += 1
+                deleted_high_with_valid_normal_candidate += 1
                 
-                # Check margin
                 matched_cost_str = row["matched_final_cost"]
                 matched_cost = float(matched_cost_str) if matched_cost_str else 1.0
-                margin = best_normal_cost - matched_cost
-                if margin <= 0.15:
+                
+                gap = best_normal_cost - matched_cost
+                gaps.append(gap)
+                
+                if gap > 0.0:
+                    better_count += 1
+                if abs(gap) <= 0.05:
+                    within_005_count += 1
+                    
+                if gap <= 0.15:
                     close_margin_stealing_cases += 1
                     
-    possible_stealing_percentage = (possible_stealing_cases / match_counts["deleted_high"] * 100.0) if match_counts["deleted_high"] > 0 else 0.0
+    deleted_high_with_valid_normal_candidate_percentage = (deleted_high_with_valid_normal_candidate / match_counts["deleted_high"] * 100.0) if match_counts["deleted_high"] > 0 else 0.0
     close_margin_stealing_percentage = (close_margin_stealing_cases / match_counts["deleted_high"] * 100.0) if match_counts["deleted_high"] > 0 else 0.0
+    
+    deleted_high_normal_cost_gap_mean = float(np.mean(gaps)) if gaps else 0.0
+    deleted_high_normal_cost_gap_median = float(np.median(gaps)) if gaps else 0.0
+    deleted_high_normal_better_count = better_count
+    deleted_high_normal_within_005_count = within_005_count
+    
+    deleted_high_to_lost_share = (deleted_high_to_lost / match_counts["deleted_high"]) if match_counts["deleted_high"] > 0 else 0.0
+    deleted_high_to_tracked_share = (deleted_high_to_tracked / match_counts["deleted_high"]) if match_counts["deleted_high"] > 0 else 0.0
 
     # median/mean metrics by matched tier
     margins_by_tier = {"high": [], "low": [], "deleted_high": []}
@@ -132,11 +150,11 @@ def analyze_audit_csv(csv_path: str, out_json: str, out_md: str) -> None:
     conclusions = []
     
     # Heuristic A: useful for lost recovery
-    if deleted_high_to_lost > 0 and (possible_stealing_cases / max(1, match_counts["deleted_high"])) < 0.3:
+    if deleted_high_to_lost > 0 and (deleted_high_with_valid_normal_candidate / max(1, match_counts["deleted_high"])) < 0.3:
         conclusions.append("relaxed detections look useful for lost recovery")
         
     # Heuristic B: stealing matches / too broad
-    if match_counts["deleted_high"] > 0 and (possible_stealing_cases / match_counts["deleted_high"]) >= 0.3:
+    if match_counts["deleted_high"] > 0 and (deleted_high_with_valid_normal_candidate / match_counts["deleted_high"]) >= 0.3:
         conclusions.append("relaxed detections look too broad / stealing matches")
         
     # Heuristic C: failures IoU gate related
@@ -157,10 +175,16 @@ def analyze_audit_csv(csv_path: str, out_json: str, out_md: str) -> None:
         "deleted_high_match_rate": deleted_high_match_rate,
         "deleted_high_to_lost": deleted_high_to_lost,
         "deleted_high_to_tracked": deleted_high_to_tracked,
-        "possible_stealing_cases": possible_stealing_cases,
-        "possible_stealing_percentage": possible_stealing_percentage,
+        "deleted_high_with_valid_normal_candidate": deleted_high_with_valid_normal_candidate,
+        "deleted_high_with_valid_normal_candidate_percentage": deleted_high_with_valid_normal_candidate_percentage,
         "close_margin_stealing_cases": close_margin_stealing_cases,
         "close_margin_stealing_percentage": close_margin_stealing_percentage,
+        "deleted_high_normal_cost_gap_mean": deleted_high_normal_cost_gap_mean,
+        "deleted_high_normal_cost_gap_median": deleted_high_normal_cost_gap_median,
+        "deleted_high_normal_better_count": deleted_high_normal_better_count,
+        "deleted_high_normal_within_005_count": deleted_high_normal_within_005_count,
+        "deleted_high_to_lost_share": deleted_high_to_lost_share,
+        "deleted_high_to_tracked_share": deleted_high_to_tracked_share,
         "mean_best_second_margin": mean_margin,
         "median_best_second_margin": median_margin,
         "mean_iou_by_tier": mean_iou,
@@ -194,10 +218,14 @@ def analyze_audit_csv(csv_path: str, out_json: str, out_md: str) -> None:
         
         f.write("## Relaxed (Deleted High) Match Details\n")
         f.write(f"- **Deleted High Match Rate**: {deleted_high_match_rate * 100.0:.2f}%\n")
-        f.write(f"- **Deleted High to Lost Tracks**: {deleted_high_to_lost}\n")
-        f.write(f"- **Deleted High to Tracked Tracks**: {deleted_high_to_tracked}\n")
-        f.write(f"- **Possible Stealing Cases**: {possible_stealing_cases} ({possible_stealing_percentage:.2f}% of deleted high matches)\n")
-        f.write(f"- **Close Margin Stealing Cases (<= 0.15)**: {close_margin_stealing_cases} ({close_margin_stealing_percentage:.2f}% of deleted high matches)\n\n")
+        f.write(f"- **Deleted High to Lost Tracks**: {deleted_high_to_lost} (Share: {deleted_high_to_lost_share * 100.0:.2f}%)\n")
+        f.write(f"- **Deleted High to Tracked Tracks**: {deleted_high_to_tracked} (Share: {deleted_high_to_tracked_share * 100.0:.2f}%)\n")
+        f.write(f"- **Deleted High With Valid Normal Candidate**: {deleted_high_with_valid_normal_candidate} ({deleted_high_with_valid_normal_candidate_percentage:.2f}% of deleted high matches)\n")
+        f.write(f"- **Close Margin Stealing Cases (<= 0.15)**: {close_margin_stealing_cases} ({close_margin_stealing_percentage:.2f}% of deleted high matches)\n")
+        f.write(f"- **Cost Gap (Normal - Deleted High) Mean**: {deleted_high_normal_cost_gap_mean:.4f}\n")
+        f.write(f"- **Cost Gap (Normal - Deleted High) Median**: {deleted_high_normal_cost_gap_median:.4f}\n")
+        f.write(f"- **Deleted High Cost Better than Normal Count**: {deleted_high_normal_better_count}\n")
+        f.write(f"- **Deleted High Cost Within 0.05 of Normal Count**: {deleted_high_normal_within_005_count}\n\n")
         
         f.write("## Metrics by Match Tier\n")
         f.write("| Matched Tier | Mean IoU Sim | Median IoU Sim | Mean Cosine Dist | Median Cosine Dist | Mean Margin | Median Margin |\n")

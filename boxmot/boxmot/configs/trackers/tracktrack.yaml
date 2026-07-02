@@ -52,3 +52,35 @@ cost_mode:
   type: choice
   default: static
   options: [static]
+
+relaxed_association_mode:
+  type: choice
+  default: recovery_only
+  options: [original_pool, recovery_only]
+
+relaxed_recovery_enabled:
+  type: boolean
+  default: true
+
+relaxed_recovery_for_lost:
+  type: boolean
+  default: true
+
+relaxed_recovery_for_unmatched_tracked:
+  type: boolean
+  default: false
+
+relaxed_recovery_match_thr:
+  type: uniform
+  default: 0.55
+  range: [0.3, 0.95]
+
+relaxed_recovery_penalty:
+  type: uniform
+  default: 0.40
+  range: [0.0, 1.0]
+
+relaxed_recovery_freeze_feature_update:
+  type: boolean
+  default: true
+
