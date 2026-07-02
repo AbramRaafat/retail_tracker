@@ -459,6 +459,119 @@ def check_tracktrack_strict_jde_relaxed_success():
     assert retail_tracker.last_route_metadata["relaxed_embedding_shape"] == (1, 128)
 
 
+def check_association_audit_logging():
+    import csv
+    import os
+    import json
+    # 1. Setup JDE fake outputs
+    dets = np.array([[0, 0, 10, 10, 0.9, 0], [20, 20, 30, 30, 0.8, 0]], dtype=np.float32)
+    embs = np.ones((2, 128), dtype=np.float32)
+    
+    detector = _CustomFakeDetector(dets, embs, {
+        "num_detections": 2,
+        "has_embeddings": True,
+        "embedding_shape": (2, 128),
+        "embedding_source": "res.embeds",
+        "embedding_dim": 128,
+        "relaxed_enabled": True,
+        "num_relaxed_detections": 1,
+        "has_relaxed_embeddings": True,
+        "relaxed_embedding_shape": (1, 128),
+    })
+    
+    # Mock predict
+    relaxed_dets = np.array([[5, 5, 15, 15, 0.85, 0]], dtype=np.float32)
+    relaxed_embs = np.ones((1, 128), dtype=np.float32)
+    
+    def predict_mock(frame):
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            relaxed_detections=relaxed_dets,
+            relaxed_embeddings=relaxed_embs,
+            metadata=detector.metadata,
+        )
+    detector.predict = predict_mock
+
+    # 2. Test running without --assoc-debug-csv
+    tracker_wrapper_no_log = TrackTrack()
+    retail_tracker_no_log = RetailTracker.__new__(RetailTracker)
+    retail_tracker_no_log.detector = detector
+    retail_tracker_no_log.tracker = tracker_wrapper_no_log
+    retail_tracker_no_log.appearance_mode = "jde"
+    retail_tracker_no_log.allow_zero_embs = False
+    
+    tracks_no_log_f1 = retail_tracker_no_log.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    tracks_no_log_f2 = retail_tracker_no_log.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    # 3. Test running with --assoc-debug-csv
+    csv_temp_path = "outputs/smoke_audit/assoc.csv"
+    summary_temp_path = "outputs/smoke_audit/assoc_summary.json"
+    
+    tracker_wrapper_log = TrackTrack()
+    # set audit params
+    tracker_wrapper_log.set_audit_params(
+        assoc_debug_csv=csv_temp_path,
+        assoc_debug_max_frames=2,
+        assoc_debug_summary=summary_temp_path
+    )
+    
+    retail_tracker_log = RetailTracker.__new__(RetailTracker)
+    retail_tracker_log.detector = detector
+    retail_tracker_log.tracker = tracker_wrapper_log
+    retail_tracker_log.appearance_mode = "jde"
+    retail_tracker_log.allow_zero_embs = False
+    
+    tracks_log_f1 = retail_tracker_log.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    tracks_log_f2 = retail_tracker_log.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    # Clean close
+    tracker_wrapper_log.close_audit()
+    
+    # 4. Verify outputs are identical
+    np.testing.assert_array_equal(tracks_no_log_f1, tracks_log_f1, err_msg="Tracks with and without logging are not identical on frame 1")
+    np.testing.assert_array_equal(tracks_no_log_f2, tracks_log_f2, err_msg="Tracks with and without logging are not identical on frame 2")
+    
+    # 5. Verify CSV exists and has headers/columns
+    assert os.path.exists(csv_temp_path), "Audit CSV was not created"
+    with open(csv_temp_path, 'r', newline='', encoding='utf-8') as f:
+        reader_csv = csv.reader(f)
+        headers = next(reader_csv)
+        assert "frame_id" in headers
+        assert "matched" in headers
+        assert "best_normal_det_tier" in headers
+        
+        row = next(reader_csv)
+        assert len(row) == len(headers)
+        
+    # 6. Verify summary JSON exists and has frames
+    assert os.path.exists(summary_temp_path), "Summary JSON was not created"
+    with open(summary_temp_path, 'r', encoding='utf-8') as f:
+        summary_data = json.load(f)
+        assert len(summary_data) > 0
+        assert summary_data[0]["frame_id"] == 1
+        assert "matches_total" in summary_data[0]
+
+    # 7. Verify analyze_assoc_audit.py can read CSV and write output
+    from retail_tracking.eval.analyze_assoc_audit import analyze_audit_csv
+    out_json = "outputs/smoke_audit/anal_summary.json"
+    out_md = "outputs/smoke_audit/anal_summary.md"
+    analyze_audit_csv(csv_temp_path, out_json, out_md)
+    
+    assert os.path.exists(out_json), "Analyzer JSON was not created"
+    assert os.path.exists(out_md), "Analyzer MD was not created"
+    
+    # Clean up temp files
+    try:
+        os.remove(csv_temp_path)
+        os.remove(summary_temp_path)
+        os.remove(out_json)
+        os.remove(out_md)
+        os.rmdir("outputs/smoke_audit")
+    except Exception:
+        pass
+
+
 def main() -> None:
     check_jde_result_optional_fields()
     check_embedding_normalization()
@@ -468,6 +581,7 @@ def main() -> None:
     check_adapter_relaxed_routing()
     check_tracktrack_strict_jde_relaxed_error()
     check_tracktrack_strict_jde_relaxed_success()
+    check_association_audit_logging()
     print("retail_tracking smoke checks passed")
 
 

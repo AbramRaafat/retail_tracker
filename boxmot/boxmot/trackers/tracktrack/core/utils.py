@@ -109,7 +109,7 @@ def compute_association_cost(tracks, dets, iou_sim, iou_dist, frame_id, d_t=3, c
         + 0.05 * angle_distance(tracks, dets, frame_id, d_t)
     )
 
-def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, penalty_p, penalty_q, reduce_step, frame_id, d_t=3, cost_mode="static", context=None):
+def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, penalty_p, penalty_q, reduce_step, frame_id, d_t=3, cost_mode="static", context=None, association_stage="unknown"):
     matches, dets = [], dets_high + dets_low + dets_del_high
     iou_sim, iou_dist = iou_distance(tracks, dets)
     cost = compute_association_cost(
@@ -124,8 +124,26 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
     )
     cost[:, len(dets_high):len(dets_high + dets_low)] += penalty_p
     cost[:, len(dets_high + dets_low):] += penalty_q
-    cost[iou_sim <= 0.10] = 1.
+    
+    # Store blocked status
+    blocked_by_iou_gate = (iou_sim <= 0.10)
+    
+    cost[blocked_by_iou_gate] = 1.
     cost = np.clip(cost, 0, 1)
+
+    # Copy of cost matrix after gating/clipping
+    original_cost = cost.copy()
+
+    # Precompute distance matrices only if audit is enabled
+    audit_writer = getattr(context, "audit_writer", None) if context is not None else None
+    if audit_writer is not None:
+        cos_dist = cos_distance(tracks, dets)
+        conf_dist = conf_distance(tracks, dets)
+        angle_dist = angle_distance(tracks, dets, frame_id, d_t)
+    else:
+        cos_dist = None
+        conf_dist = None
+        angle_dist = None
 
     while True:
         matches_ = associate(cost, match_thr)
@@ -136,6 +154,143 @@ def iterative_assignment(tracks, dets_high, dets_low, dets_del_high, match_thr, 
             cost[t, :] = cost[:, d] = 1.
 
     m_tracks, m_dets = [t for t, _ in matches], [d for _, d in matches]
+    
+    # Perform auditing
+    if audit_writer is not None:
+        state_map = {0: "New", 1: "Tracked", 2: "Lost", 3: "Removed"}
+        matched_d_map = {t_idx: d_idx for t_idx, d_idx in matches}
+        
+        for t in range(len(tracks)):
+            track = tracks[t]
+            track_state = state_map.get(track.state, "Unknown")
+            track_history_len = len(track.history)
+            frames_since_update = frame_id - track.end_frame_id
+            
+            best_det_index = -1
+            best_det_tier = "none"
+            best_det_score = 0.0
+            best_final_cost = 1.0
+            second_best_final_cost = 1.0
+            best_second_margin = 0.0
+            best_iou_sim = 0.0
+            best_iou_dist = 1.0
+            best_cos_dist = 1.0
+            best_conf_dist = 1.0
+            best_angle_dist = 1.0
+            best_blocked_by_iou_gate = False
+            
+            best_normal_det_index = -1
+            best_normal_det_tier = "none"
+            best_normal_final_cost = 1.0
+
+            if len(dets) > 0:
+                track_costs = original_cost[t, :]
+                sorted_indices = np.argsort(track_costs)
+                best_d = int(sorted_indices[0])
+                best_det_index = best_d
+                best_final_cost = float(track_costs[best_d])
+                
+                if best_d < len(dets_high):
+                    best_det_tier = "high"
+                elif best_d < len(dets_high) + len(dets_low):
+                    best_det_tier = "low"
+                else:
+                    best_det_tier = "deleted_high"
+                
+                best_det_score = float(dets[best_d].score)
+                best_iou_sim = float(iou_sim[t, best_d])
+                best_iou_dist = float(iou_dist[t, best_d])
+                best_cos_dist = float(cos_dist[t, best_d])
+                best_conf_dist = float(conf_dist[t, best_d])
+                best_angle_dist = float(angle_dist[t, best_d])
+                best_blocked_by_iou_gate = bool(blocked_by_iou_gate[t, best_d])
+                
+                if len(dets) > 1:
+                    second_d = int(sorted_indices[1])
+                    second_best_final_cost = float(track_costs[second_d])
+                else:
+                    second_best_final_cost = 1.0
+                best_second_margin = second_best_final_cost - best_final_cost
+
+                # Find best normal candidate (high or low)
+                normal_indices = [i for i in range(len(dets)) if i < len(dets_high) + len(dets_low)]
+                if len(normal_indices) > 0:
+                    normal_costs = original_cost[t, normal_indices]
+                    best_normal_idx_in_subset = np.argmin(normal_costs)
+                    best_normal_d = int(normal_indices[best_normal_idx_in_subset])
+                    
+                    best_normal_det_index = best_normal_d
+                    best_normal_final_cost = float(normal_costs[best_normal_idx_in_subset])
+                    if best_normal_d < len(dets_high):
+                        best_normal_det_tier = "high"
+                    else:
+                        best_normal_det_tier = "low"
+
+            matched = t in matched_d_map
+            if matched:
+                matched_d = int(matched_d_map[t])
+                matched_det_index = matched_d
+                if matched_d < len(dets_high):
+                    matched_det_tier = "high"
+                elif matched_d < len(dets_high) + len(dets_low):
+                    matched_det_tier = "low"
+                else:
+                    matched_det_tier = "deleted_high"
+                
+                matched_det_score = float(dets[matched_d].score)
+                matched_final_cost = float(original_cost[t, matched_d])
+                matched_iou_sim = float(iou_sim[t, matched_d])
+                matched_cos_dist = float(cos_dist[t, matched_d])
+                matched_conf_dist = float(conf_dist[t, matched_d])
+                matched_angle_dist = float(angle_dist[t, matched_d])
+            else:
+                matched_det_index = -1
+                matched_det_tier = "none"
+                matched_det_score = 0.0
+                matched_final_cost = 1.0
+                matched_iou_sim = 0.0
+                matched_cos_dist = 1.0
+                matched_conf_dist = 1.0
+                matched_angle_dist = 1.0
+
+            row = {
+                "frame_id": int(frame_id),
+                "association_stage": association_stage,
+                "track_index": int(t),
+                "track_id": int(track.track_id),
+                "track_state": track_state,
+                "track_history_len": int(track_history_len),
+                "frames_since_update": int(frames_since_update),
+                "num_dets_high": int(len(dets_high)),
+                "num_dets_low": int(len(dets_low)),
+                "num_dets_deleted_high": int(len(dets_del_high)),
+                "best_det_index": int(best_det_index),
+                "best_det_tier": best_det_tier,
+                "best_det_score": float(best_det_score),
+                "best_final_cost": float(best_final_cost),
+                "second_best_final_cost": float(second_best_final_cost),
+                "best_second_margin": float(best_second_margin),
+                "best_iou_sim": float(best_iou_sim),
+                "best_iou_dist": float(best_iou_dist),
+                "best_cos_dist": float(best_cos_dist),
+                "best_conf_dist": float(best_conf_dist),
+                "best_angle_dist": float(best_angle_dist),
+                "best_blocked_by_iou_gate": bool(best_blocked_by_iou_gate),
+                "matched": bool(matched),
+                "matched_det_index": int(matched_det_index),
+                "matched_det_tier": matched_det_tier,
+                "matched_det_score": float(matched_det_score),
+                "matched_final_cost": float(matched_final_cost),
+                "matched_iou_sim": float(matched_iou_sim),
+                "matched_cos_dist": float(matched_cos_dist),
+                "matched_conf_dist": float(matched_conf_dist),
+                "matched_angle_dist": float(matched_angle_dist),
+                "best_normal_det_index": int(best_normal_det_index),
+                "best_normal_det_tier": best_normal_det_tier,
+                "best_normal_final_cost": float(best_normal_final_cost)
+            }
+            audit_writer.write_row(row)
+
     return matches, [t for t in range(len(tracks)) if t not in m_tracks], [d for d in range(len(dets)) if d not in m_dets]
 
 def track_aware_nms(pair_sims, scores, num_tracks, nms_thresh, score_thresh):

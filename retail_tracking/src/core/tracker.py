@@ -32,7 +32,10 @@ class RetailTracker:
                  device: str = 'cuda:0',
                  half: bool = True,
                  appearance_mode: str = "auto",
-                 allow_zero_embs: bool = False):
+                 allow_zero_embs: bool = False,
+                 assoc_debug_csv: Optional[str] = None,
+                 assoc_debug_max_frames: Optional[int] = None,
+                 assoc_debug_summary: Optional[str] = None):
         """
         Initializes the tracking ecosystem via BoxMOT factory methods.
         
@@ -46,6 +49,9 @@ class RetailTracker:
             half: Whether tracker-owned ReID tensor operations may use half precision.
             appearance_mode: Appearance routing mode ('auto', 'jde', 'external', 'none').
             allow_zero_embs: Allow using zero embeddings if JDE/external ReID is unavailable.
+            assoc_debug_csv: Optional path for association debugging output.
+            assoc_debug_max_frames: Max frames to record for association debugging.
+            assoc_debug_summary: Optional path for association summary output.
         """
         if appearance_mode == "external" and not reid_weights:
             raise RuntimeError("--appearance-mode external requires --reid.")
@@ -69,6 +75,14 @@ class RetailTracker:
                 device=device,
                 half=half
             )
+
+            # Thread debug audit parameters to the tracker if it supports it
+            if hasattr(self.tracker, "set_audit_params"):
+                self.tracker.set_audit_params(
+                    assoc_debug_csv=assoc_debug_csv,
+                    assoc_debug_max_frames=assoc_debug_max_frames,
+                    assoc_debug_summary=assoc_debug_summary,
+                )
         except Exception as e:
             raise RuntimeError(f"Failed to instantiate tracker '{tracker_type}': {e}")
 

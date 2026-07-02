@@ -78,6 +78,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--relaxed-conf", type=float, default=0.03, help="Relaxed confidence threshold.")
     parser.add_argument("--relaxed-iou", type=float, default=0.95, help="Relaxed NMS IoU threshold.")
     parser.add_argument("--debug-routing", action="store_true", help="Print early-frame detector/embedding routing metadata.")
+    parser.add_argument("--assoc-debug-csv", type=str, default=None, help="Path to association audit CSV output file.")
+    parser.add_argument("--assoc-debug-max-frames", type=int, default=None, help="Optional frame limit for association audit logging.")
+    parser.add_argument("--assoc-debug-summary", type=str, default=None, help="Path to frame summary JSON output file.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional limit for quick first-N-frame runs.")
     parser.add_argument("--video-out", type=str, default=None, help="Optional visualization video output path.")
     parser.add_argument("--display", action="store_true", help="Display annotated tracking live.")
@@ -160,6 +163,9 @@ def run_eval() -> None:
             half=use_half,
             appearance_mode=args.appearance_mode,
             allow_zero_embs=args.allow_zero_embs,
+            assoc_debug_csv=args.assoc_debug_csv,
+            assoc_debug_max_frames=args.assoc_debug_max_frames,
+            assoc_debug_summary=args.assoc_debug_summary,
         )
     except Exception as e:
         logger.error("Initialization failure: %s", e)
@@ -288,6 +294,9 @@ def run_eval() -> None:
             out.release()
         if args.display:
             cv2.destroyAllWindows()
+        if 'tracker_system' in locals() and hasattr(tracker_system, "tracker"):
+            if hasattr(tracker_system.tracker, "close_audit"):
+                tracker_system.tracker.close_audit()
         print()
 
     total_wall_time = time.perf_counter() - total_wall_start

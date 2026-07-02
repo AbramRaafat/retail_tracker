@@ -1,0 +1,54 @@
+max_age:
+  type: randint
+  default: 60
+  range: [15, 90]
+
+min_hits:
+  type: randint
+  default: 3
+  range: [1, 5]
+
+det_thresh:
+  type: uniform
+  default: 0.40
+  range: [0.1, 0.8]
+
+iou_threshold:
+  type: uniform
+  default: 0.30
+  range: [0.1, 0.9]
+
+match_thr:
+  type: uniform
+  default: 0.55
+  range: [0.5, 0.95]
+
+penalty_p:
+  type: uniform
+  default: 0.20
+  range: [0.05, 0.5]
+
+penalty_q:
+  type: uniform
+  default: 0.40
+  range: [0.1, 0.7]
+
+reduce_step:
+  type: uniform
+  default: 0.05
+  range: [0.01, 0.15]
+
+tai_thr:
+  type: uniform
+  default: 0.55
+  range: [0.3, 0.8]
+
+init_thr:
+  type: uniform
+  default: 0.40
+  range: [0.4, 0.9]
+
+cost_mode:
+  type: choice
+  default: static
+  options: [static]

@@ -66,6 +66,32 @@ class TrackTrack(BaseTracker):
             "allow_zero_embs": allow_zero_embs,
         }
 
+    def set_audit_params(
+        self,
+        assoc_debug_csv: Optional[str] = None,
+        assoc_debug_max_frames: Optional[int] = None,
+        assoc_debug_summary: Optional[str] = None,
+    ) -> None:
+        if assoc_debug_csv:
+            try:
+                from retail_tracking.src.utils.audit_writer import AssociationAuditWriter
+            except ImportError:
+                from src.utils.audit_writer import AssociationAuditWriter
+            
+            self.audit_writer = AssociationAuditWriter(
+                csv_path=assoc_debug_csv,
+                max_frames=assoc_debug_max_frames,
+                summary_path=assoc_debug_summary,
+            )
+            self.tracker.audit_writer = self.audit_writer
+        else:
+            self.audit_writer = None
+            self.tracker.audit_writer = None
+
+    def close_audit(self) -> None:
+        if hasattr(self, "audit_writer") and self.audit_writer is not None:
+            self.audit_writer.close()
+
     @staticmethod
     def _normalize_embeddings(embs: np.ndarray) -> np.ndarray:
         embs = np.asarray(embs, dtype=np.float32)
