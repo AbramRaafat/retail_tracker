@@ -158,8 +158,8 @@ class TrackTrack(BaseTracker):
                         used_zero_embs = True
                     else:
                         raise RuntimeError(
-                            "JDE embeddings were not returned by the detector and no external ReID model was provided.\n"
-                            "Use --appearance-mode none only for ablation, or provide --reid, or fix JDE embedding extraction."
+                            "JDE embeddings were not returned, and external ReID extraction failed to return embeddings.\n"
+                            "Check the ReID backend interface, provide valid --reid weights, or use --appearance-mode none only for ablation."
                         )
             else:
                 if allow_zero_embs:
@@ -203,50 +203,96 @@ class TrackTrack(BaseTracker):
             "used_zero_embeddings": used_zero_embs,
             "num_detections": int(len(dets)),
             "num_relaxed_detections": 0,
+            "has_relaxed_embeddings": False,
+            "relaxed_embedding_shape": None,
         }
 
         return normalized_embs
 
-    def _prepare_embeddings(self, dets: np.ndarray, embs: np.ndarray) -> np.ndarray:
-        if embs is None:
-            if not self._warned_missing_embs:
-                logger.warning(
-                    "TrackTrack received detections without embeddings; using zero vectors, "
-                    "so appearance matching is disabled for those detections. TODO: route "
-                    "reid_model extraction here when JDE embeddings are unavailable."
-                )
-                self._warned_missing_embs = True
-            return np.zeros((len(dets), 128), dtype=np.float32)
-
-        embs = self._normalize_embeddings(embs)
-        if embs.shape[0] != len(dets):
-            raise ValueError(
-                f"Embedding count ({embs.shape[0]}) does not match detection count ({len(dets)})."
-            )
-        return embs
-
-    def _format_detections(self, dets: np.ndarray, embs: np.ndarray) -> np.ndarray:
-        dets = np.asarray(dets, dtype=np.float32)
-        embs = self._prepare_embeddings(dets, embs)
-        return np.concatenate((dets, embs), axis=1)
-
-    def _format_relaxed_detections(self, emb_dim: int) -> np.ndarray:
+    def _format_relaxed_detections(self, img: np.ndarray, emb_dim: int) -> np.ndarray:
         relaxed_dets = self._frame_aux.get("relaxed_detections")
         if relaxed_dets is None or len(relaxed_dets) == 0:
             return np.empty((0, 6 + emb_dim), dtype=np.float32)
 
         relaxed_dets = np.asarray(relaxed_dets, dtype=np.float32)
         relaxed_embs = self._frame_aux.get("relaxed_embeddings")
-        if relaxed_embs is None:
-            relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+        
+        appearance_mode = self._frame_aux.get("appearance_mode", "auto")
+        allow_zero_embs = self._frame_aux.get("allow_zero_embs", False)
+        
+        normal_route = self.last_route_metadata.get("embedding_route", "none")
+        
+        resolved_relaxed_embs = None
+        has_relaxed_embs = False
+        
+        if appearance_mode == "none":
+            resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+        elif appearance_mode == "jde":
+            if relaxed_embs is not None:
+                resolved_relaxed_embs = relaxed_embs
+                has_relaxed_embs = True
+            else:
+                if allow_zero_embs:
+                    resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                else:
+                    raise RuntimeError("Relaxed detections exist but relaxed JDE embeddings are missing in 'jde' mode.")
+        elif appearance_mode == "auto":
+            if normal_route == "jde":
+                if relaxed_embs is not None:
+                    resolved_relaxed_embs = relaxed_embs
+                    has_relaxed_embs = True
+                else:
+                    if allow_zero_embs:
+                        resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                    else:
+                        raise RuntimeError("Relaxed detections exist but relaxed JDE embeddings are missing in 'auto' mode when JDE is active.")
+            elif normal_route == "external_reid":
+                if self.reid_model is not None:
+                    resolved_relaxed_embs = self._extract_external_reid_embeddings(img, relaxed_dets)
+                    if resolved_relaxed_embs is not None and resolved_relaxed_embs.size > 0:
+                        has_relaxed_embs = True
+                    else:
+                        if allow_zero_embs:
+                            resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                        else:
+                            raise NotImplementedError("External ReID extraction failed or is not implemented for relaxed detections in 'auto' mode.")
+                else:
+                    if allow_zero_embs:
+                        resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                    else:
+                        raise NotImplementedError("External ReID model is missing for relaxed detections in 'auto' mode.")
+            else:
+                if allow_zero_embs:
+                    resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                else:
+                    raise RuntimeError("Normal route had no embeddings, and allow_zero_embs is False.")
+        elif appearance_mode == "external":
+            if self.reid_model is not None:
+                resolved_relaxed_embs = self._extract_external_reid_embeddings(img, relaxed_dets)
+                if resolved_relaxed_embs is not None and resolved_relaxed_embs.size > 0:
+                    has_relaxed_embs = True
+                else:
+                    if allow_zero_embs:
+                        resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                    else:
+                        raise NotImplementedError("External ReID extraction failed or is not implemented for relaxed detections in 'external' mode.")
+            else:
+                if allow_zero_embs:
+                    resolved_relaxed_embs = np.zeros((len(relaxed_dets), emb_dim), dtype=np.float32)
+                else:
+                    raise RuntimeError("--appearance-mode external requires --reid.")
         else:
-            relaxed_embs = self._normalize_embeddings(relaxed_embs)
-            if relaxed_embs.shape[0] != len(relaxed_dets):
-                raise ValueError(
-                    "Relaxed embedding count does not match relaxed detection count."
-                )
+            raise ValueError(f"Unknown appearance_mode: {appearance_mode}")
 
-        return np.concatenate((relaxed_dets, relaxed_embs), axis=1)
+        resolved_relaxed_embs = self._normalize_embeddings(resolved_relaxed_embs)
+        
+        if resolved_relaxed_embs.shape[0] != len(relaxed_dets):
+            raise ValueError("Relaxed embedding count does not match relaxed detection count.")
+
+        self.last_route_metadata["has_relaxed_embeddings"] = has_relaxed_embs
+        self.last_route_metadata["relaxed_embedding_shape"] = tuple(resolved_relaxed_embs.shape) if has_relaxed_embs else None
+
+        return np.concatenate((relaxed_dets, resolved_relaxed_embs), axis=1)
 
     def _update_impl(self, dets: np.ndarray, img: np.ndarray, embs: np.ndarray = None) -> np.ndarray:
         appearance_mode = self._frame_aux.get("appearance_mode", "auto")
@@ -261,6 +307,8 @@ class TrackTrack(BaseTracker):
                 "used_zero_embeddings": False,
                 "num_detections": 0,
                 "num_relaxed_detections": 0,
+                "has_relaxed_embeddings": False,
+                "relaxed_embedding_shape": None,
             }
             self._frame_aux = {}
             return self.empty_output()
@@ -273,12 +321,16 @@ class TrackTrack(BaseTracker):
             allow_zero_embs=allow_zero_embs,
         )
 
+        # Initialize relaxed metadata fields before formatting
+        self.last_route_metadata["num_relaxed_detections"] = 0
+        self.last_route_metadata["has_relaxed_embeddings"] = False
+        self.last_route_metadata["relaxed_embedding_shape"] = None
+
         # Format: [x1, y1, x2, y2, conf, cls, emb[0], emb[1]...]
         formatted_dets = np.concatenate((dets, resolved_embs), axis=1)
-        formatted_dets_95 = self._format_relaxed_detections(formatted_dets.shape[1] - 6)
+        formatted_dets_95 = self._format_relaxed_detections(img, formatted_dets.shape[1] - 6)
         
-        if hasattr(self, "last_route_metadata"):
-            self.last_route_metadata["num_relaxed_detections"] = int(len(formatted_dets_95))
+        self.last_route_metadata["num_relaxed_detections"] = int(len(formatted_dets_95))
 
         self._frame_aux = {}
 

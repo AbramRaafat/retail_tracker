@@ -73,6 +73,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=50, help="Console progress update interval in frames.")
     parser.add_argument("--appearance-mode", type=str, choices=["auto", "jde", "external", "none"], default="auto", help="Appearance routing mode for TrackTrack.")
     parser.add_argument("--allow-zero-embs", action="store_true", help="Allow zero embeddings fallback if missing.")
+    parser.add_argument("--normal-iou", type=float, default=0.70, help="Normal NMS IoU threshold.")
+    parser.add_argument("--relaxed-dets", action="store_true", help="Enable relaxed detections recovery.")
+    parser.add_argument("--relaxed-conf", type=float, default=0.03, help="Relaxed confidence threshold.")
+    parser.add_argument("--relaxed-iou", type=float, default=0.95, help="Relaxed NMS IoU threshold.")
     parser.add_argument("--debug-routing", action="store_true", help="Print early-frame detector/embedding routing metadata.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional limit for quick first-N-frame runs.")
     parser.add_argument("--video-out", type=str, default=None, help="Optional visualization video output path.")
@@ -142,6 +146,10 @@ def run_eval() -> None:
             device=args.device,
             half=use_half,
             imgsz=args.imgsz,
+            relaxed_enabled=args.relaxed_dets,
+            relaxed_conf_threshold=args.relaxed_conf,
+            relaxed_iou_threshold=args.relaxed_iou,
+            normal_iou_threshold=args.normal_iou,
         )
         tracker_system = RetailTracker(
             detector=model_adapter,
@@ -218,7 +226,8 @@ def run_eval() -> None:
                     jde_meta = getattr(tracker_system, "last_jde_metadata", {}) or {}
                     route_meta = getattr(tracker_system, "last_route_metadata", {}) or {}
                     logger.info(
-                        "ROUTE frame=%d dets=%s has_jde=%s source=%s emb_shape=%s mode=%s route=%s zero=%s relaxed=%s tracks=%d",
+                        "ROUTE frame=%d dets=%s has_jde=%s source=%s emb_shape=%s mode=%s route=%s zero=%s "
+                        "relaxed_enabled=%s relaxed=%s has_relaxed=%s relaxed_shape=%s tracks=%d",
                         frame_count,
                         jde_meta.get("num_detections"),
                         jde_meta.get("has_embeddings"),
@@ -227,7 +236,10 @@ def run_eval() -> None:
                         route_meta.get("appearance_mode", "auto"),
                         route_meta.get("embedding_route", "none"),
                         route_meta.get("used_zero_embeddings", False),
+                        jde_meta.get("relaxed_enabled", False),
                         route_meta.get("num_relaxed_detections", 0),
+                        route_meta.get("has_relaxed_embeddings", False),
+                        route_meta.get("relaxed_embedding_shape"),
                         len(tracks),
                     )
 

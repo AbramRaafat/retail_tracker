@@ -23,6 +23,8 @@ class JDEResult:
     metadata: dict = field(default_factory=dict)
 
 
+
+
 class BaseJDEAdapter(ABC):
     @abstractmethod
     def predict(self, frame: np.ndarray) -> JDEResult:
@@ -44,6 +46,10 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
         imgsz: int = 1280,
         conf_threshold: float = 0.35,
         classes: Optional[List[int]] = None,
+        relaxed_enabled: bool = False,
+        relaxed_conf_threshold: float = 0.03,
+        relaxed_iou_threshold: float = 0.95,
+        normal_iou_threshold: float = 0.70,
     ):
         self.detector = YOLO(weights_path)
         self.device = device
@@ -51,6 +57,10 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
         self.imgsz = imgsz
         self.conf_threshold = conf_threshold
         self.classes = classes if classes is not None else [0]
+        self.relaxed_enabled = relaxed_enabled
+        self.relaxed_conf_threshold = relaxed_conf_threshold
+        self.relaxed_iou_threshold = relaxed_iou_threshold
+        self.normal_iou_threshold = normal_iou_threshold
 
     def warmup(self, frame_shape: tuple[int, int, int] | None = None) -> None:
         shape = frame_shape if frame_shape is not None else (640, 640, 3)
@@ -60,32 +70,27 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
         except Exception as exc:
             logger.warning("Detector warmup failed; continuing without warmup: %s", exc)
 
-    def predict(self, frame: np.ndarray) -> JDEResult:
+    def _run_predict(self, frame: np.ndarray, conf: float, iou: float):
         context = torch.inference_mode() if torch is not None else nullcontext()
         with context:
             results = self.detector.predict(
                 frame,
                 classes=self.classes,
-                conf=self.conf_threshold,
+                conf=conf,
+                iou=iou,
                 device=self.device,
                 half=self.half,
                 imgsz=self.imgsz,
                 verbose=False,
             )
-        
         if not results or len(results[0].boxes) == 0:
-            return JDEResult(
-                detections=np.empty((0, 6), dtype=np.float32),
-                metadata={
-                    "num_detections": 0,
-                    "has_embeddings": False,
-                    "embedding_shape": None,
-                    "embedding_source": "none",
-                    "embedding_dim": None,
-                },
-            )
+            return None
+        return results[0]
 
-        res = results[0]
+    def _extract_dets_embs(self, res) -> tuple[np.ndarray, Optional[np.ndarray], str]:
+        if res is None or len(res.boxes) == 0:
+            return np.empty((0, 6), dtype=np.float32), None, "none"
+
         raw_dets = res.boxes.data.cpu().numpy()
         dets = np.asarray(raw_dets[:, :6], dtype=np.float32)
         embs = None
@@ -116,24 +121,48 @@ class UltralyticsJDEAdapter(BaseJDEAdapter):
                            dets.shape[0], embs.shape[0])
             embs = None
             embedding_source = "none"
-        elif embs is not None:
-            # Do not normalize here. Trackers own final embedding normalization because
-            # different trackers/backends may have different appearance assumptions.
-            pass
 
+        return dets, embs, embedding_source
+
+    def predict(self, frame: np.ndarray) -> JDEResult:
+        # 1. Normal predict pass
+        res_normal = self._run_predict(frame, self.conf_threshold, self.normal_iou_threshold)
+        dets, embs, emb_src = self._extract_dets_embs(res_normal)
+        
+        # 2. Relaxed predict pass (if enabled)
+        relaxed_dets = None
+        relaxed_embs = None
+        relaxed_emb_src = "none"
+        
+        if self.relaxed_enabled:
+            res_relaxed = self._run_predict(frame, self.relaxed_conf_threshold, self.relaxed_iou_threshold)
+            relaxed_dets, relaxed_embs, relaxed_emb_src = self._extract_dets_embs(res_relaxed)
+            
+        # Assemble metadata
         metadata = {
             "num_detections": int(dets.shape[0]),
             "has_embeddings": embs is not None,
             "embedding_shape": tuple(embs.shape) if embs is not None else None,
-            "embedding_source": embedding_source,
+            "embedding_source": emb_src,
             "embedding_dim": int(embs.shape[1]) if embs is not None else None,
+            
+            "relaxed_enabled": self.relaxed_enabled,
+            "num_relaxed_detections": int(relaxed_dets.shape[0]) if relaxed_dets is not None else 0,
+            "has_relaxed_embeddings": relaxed_embs is not None,
+            "relaxed_embedding_shape": tuple(relaxed_embs.shape) if relaxed_embs is not None else None,
+            "relaxed_embedding_source": relaxed_emb_src,
+            "relaxed_conf_threshold": self.relaxed_conf_threshold,
+            "relaxed_iou_threshold": self.relaxed_iou_threshold,
+            "normal_iou_threshold": self.normal_iou_threshold,
         }
-
+        
         if embs is not None and embs.size > 0:
             metadata["embedding_norm_mean"] = float(np.linalg.norm(embs, axis=1).mean())
 
         return JDEResult(
             detections=dets,
             embeddings=embs,
+            relaxed_detections=relaxed_dets,
+            relaxed_embeddings=relaxed_embs,
             metadata=metadata,
         )

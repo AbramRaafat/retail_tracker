@@ -108,6 +108,20 @@ class _FakeYOLO:
         return [_FakeResult(dets, embs)]
 
 
+class _ConfigurableFakeYOLO:
+    last_predict_kwargs = []
+    predict_side_effects = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def predict(self, *args, **kwargs):
+        _ConfigurableFakeYOLO.last_predict_kwargs.append(kwargs)
+        if _ConfigurableFakeYOLO.predict_side_effects:
+            return _ConfigurableFakeYOLO.predict_side_effects.pop(0)
+        return []
+
+
 class _EmptyDetector:
     def predict(self, frame):
         return JDEResult(detections=np.empty((0, 6), dtype=np.float32))
@@ -282,12 +296,178 @@ def check_appearance_routing_modes():
         assert "no external ReID model" in str(e)
 
 
+def check_adapter_relaxed_routing():
+    original_yolo = adapters.YOLO
+    adapters.YOLO = _ConfigurableFakeYOLO
+    try:
+        # Clear side effects
+        _ConfigurableFakeYOLO.predict_side_effects = []
+        _ConfigurableFakeYOLO.last_predict_kwargs = []
+
+        # Setup side effects:
+        # Pass 1: normal result (1 det, 128-D embs)
+        dets_normal = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+        embs_normal = np.ones((1, 128), dtype=np.float32)
+        
+        # Pass 2: relaxed result (2 dets, 128-D embs)
+        dets_relaxed = np.array([[0, 0, 10, 10, 0.9, 0], [20, 20, 30, 30, 0.8, 0]], dtype=np.float32)
+        embs_relaxed = np.ones((2, 128), dtype=np.float32)
+        
+        _ConfigurableFakeYOLO.predict_side_effects = [
+            [_FakeResult(dets_normal, embs_normal)],
+            [_FakeResult(dets_relaxed, embs_relaxed)]
+        ]
+
+        adapter = adapters.UltralyticsJDEAdapter(
+            "unused.pt",
+            device="cpu",
+            half=False,
+            imgsz=640,
+            conf_threshold=0.2,
+            classes=[0],
+            relaxed_enabled=True,
+            relaxed_conf_threshold=0.03,
+            relaxed_iou_threshold=0.95,
+            normal_iou_threshold=0.70,
+        )
+        
+        # Run predict
+        result = adapter.predict(np.zeros((32, 32, 3), dtype=np.uint8))
+        
+        # Assertions for Test A
+        assert result.detections.shape == (1, 6)
+        assert result.embeddings.shape == (1, 128)
+        assert result.relaxed_detections.shape == (2, 6)
+        assert result.relaxed_embeddings.shape == (2, 128)
+        assert result.metadata["relaxed_enabled"] is True
+        assert result.metadata["num_relaxed_detections"] == 2
+        assert result.metadata["has_relaxed_embeddings"] is True
+        assert result.metadata["relaxed_embedding_shape"] == (2, 128)
+        assert result.metadata["normal_iou_threshold"] == 0.70
+        assert result.metadata["relaxed_conf_threshold"] == 0.03
+        assert result.metadata["relaxed_iou_threshold"] == 0.95
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[0]["conf"] == 0.2
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[0]["iou"] == 0.70
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[1]["conf"] == 0.03
+        assert _ConfigurableFakeYOLO.last_predict_kwargs[1]["iou"] == 0.95
+
+        # Test D: Backward compatibility test (relaxed_enabled=False)
+        _ConfigurableFakeYOLO.predict_side_effects = [
+            [_FakeResult(dets_normal, embs_normal)]
+        ]
+        adapter_disabled = adapters.UltralyticsJDEAdapter(
+            "unused.pt",
+            device="cpu",
+            half=False,
+            imgsz=640,
+            conf_threshold=0.2,
+            classes=[0],
+            relaxed_enabled=False,
+        )
+        result_disabled = adapter_disabled.predict(np.zeros((32, 32, 3), dtype=np.uint8))
+        
+        assert result_disabled.relaxed_detections is None
+        assert result_disabled.relaxed_embeddings is None
+        assert result_disabled.metadata["relaxed_enabled"] is False
+        assert result_disabled.metadata["num_relaxed_detections"] == 0
+        
+    finally:
+        adapters.YOLO = original_yolo
+
+
+def check_tracktrack_strict_jde_relaxed_error():
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.array([[1.0] * 128], dtype=np.float32)
+    
+    detector = _CustomFakeDetector(dets, embs, {
+        "num_detections": 1,
+        "has_embeddings": True,
+        "embedding_shape": (1, 128),
+        "embedding_source": "res.embeds",
+        "embedding_dim": 128,
+        "relaxed_enabled": True,
+        "num_relaxed_detections": 1,
+        "has_relaxed_embeddings": False,
+        "relaxed_embedding_shape": None,
+    })
+    
+    def predict_mock(frame):
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            relaxed_detections=dets,
+            relaxed_embeddings=None,
+            metadata=detector.metadata,
+        )
+    detector.predict = predict_mock
+    
+    tracker_wrapper = TrackTrack()
+    retail_tracker = RetailTracker.__new__(RetailTracker)
+    retail_tracker.detector = detector
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "jde"
+    retail_tracker.allow_zero_embs = False
+    retail_tracker.last_jde_metadata = {}
+    retail_tracker.last_route_metadata = {}
+    
+    try:
+        retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+        assert False, "Should have raised RuntimeError"
+    except RuntimeError as e:
+        assert "relaxed JDE embeddings are missing" in str(e)
+
+
+def check_tracktrack_strict_jde_relaxed_success():
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.array([[1.0] * 128], dtype=np.float32)
+    
+    detector = _CustomFakeDetector(dets, embs, {
+        "num_detections": 1,
+        "has_embeddings": True,
+        "embedding_shape": (1, 128),
+        "embedding_source": "res.embeds",
+        "embedding_dim": 128,
+        "relaxed_enabled": True,
+        "num_relaxed_detections": 1,
+        "has_relaxed_embeddings": True,
+        "relaxed_embedding_shape": (1, 128),
+    })
+    
+    def predict_mock(frame):
+        return JDEResult(
+            detections=dets,
+            embeddings=embs,
+            relaxed_detections=dets,
+            relaxed_embeddings=embs,
+            metadata=detector.metadata,
+        )
+    detector.predict = predict_mock
+    
+    tracker_wrapper = TrackTrack()
+    retail_tracker = RetailTracker.__new__(RetailTracker)
+    retail_tracker.detector = detector
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "jde"
+    retail_tracker.allow_zero_embs = False
+    retail_tracker.last_jde_metadata = {}
+    retail_tracker.last_route_metadata = {}
+    
+    tracks = retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    
+    assert retail_tracker.last_route_metadata["num_relaxed_detections"] == 1
+    assert retail_tracker.last_route_metadata["has_relaxed_embeddings"] is True
+    assert retail_tracker.last_route_metadata["relaxed_embedding_shape"] == (1, 128)
+
+
 def main() -> None:
     check_jde_result_optional_fields()
     check_embedding_normalization()
     check_empty_frame_updates_tracker()
     check_tracktrack_empty_update()
     check_appearance_routing_modes()
+    check_adapter_relaxed_routing()
+    check_tracktrack_strict_jde_relaxed_error()
+    check_tracktrack_strict_jde_relaxed_success()
     print("retail_tracking smoke checks passed")
 
 
