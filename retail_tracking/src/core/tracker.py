@@ -88,6 +88,40 @@ class RetailTracker:
                     assoc_debug_max_frames=assoc_debug_max_frames,
                     assoc_debug_summary=assoc_debug_summary,
                 )
+
+            # Print relaxed tracking configuration for reproducibility
+            logger.info("==================================================")
+            logger.info("TrackTrack Tracker Startup Configuration:")
+            logger.info("  tracker_config: %s", tracker_config)
+            logger.info("  relaxed_dets_enabled: %s", getattr(self.detector, "relaxed_enabled", "N/A"))
+            logger.info("  relaxed_source: %s", getattr(self.detector, "relaxed_source", "N/A"))
+            core_args = getattr(getattr(self.tracker, "tracker", None), "args", None)
+            if core_args is not None:
+                cost_mode = getattr(core_args, "cost_mode", "static")
+                if cost_mode == "static_shadow_mahalanobis":
+                    behavior_mode = "shadow-only"
+                elif cost_mode == "static_mahalanobis_gate":
+                    behavior_mode = "mahalanobis-gate"
+                elif cost_mode == "static_mahalanobis_blend":
+                    behavior_mode = "mahalanobis-blend"
+                else:
+                    behavior_mode = "static"
+                logger.info("  cost_mode: %s", cost_mode)
+                logger.info("  behavior_mode: %s", behavior_mode)
+                logger.info("  relaxed_association_mode: %s", getattr(core_args, "relaxed_association_mode", "N/A"))
+                logger.info("  relaxed_recovery_enabled: %s", getattr(core_args, "relaxed_recovery_enabled", "N/A"))
+                logger.info("  relaxed_recovery_for_lost: %s", getattr(core_args, "relaxed_recovery_for_lost", "N/A"))
+                logger.info("  relaxed_recovery_for_unmatched_tracked: %s", getattr(core_args, "relaxed_recovery_for_unmatched_tracked", "N/A"))
+                logger.info("  relaxed_recovery_freeze_feature_update: %s", getattr(core_args, "relaxed_recovery_freeze_feature_update", "N/A"))
+                logger.info("  mahalanobis_enabled: %s", getattr(core_args, "mahalanobis_enabled", "N/A"))
+                logger.info("  mahalanobis_gate_dim: %s", getattr(core_args, "mahalanobis_gate_dim", "N/A"))
+                logger.info("  mahalanobis_gate_confidence: %s", getattr(core_args, "mahalanobis_gate_confidence", "N/A"))
+                logger.info("  mahalanobis_gate_threshold: %s", getattr(core_args, "mahalanobis_gate_threshold", "N/A"))
+                logger.info("  mahalanobis_apply_to_states: %s", getattr(core_args, "mahalanobis_apply_to_states", "N/A"))
+                logger.info("  mahalanobis_apply_to_tiers: %s", getattr(core_args, "mahalanobis_apply_to_tiers", "N/A"))
+                logger.info("  mahalanobis_fail_open: %s", getattr(core_args, "mahalanobis_fail_open", "N/A"))
+                logger.info("  mahalanobis_weight: %s", getattr(core_args, "mahalanobis_weight", "N/A"))
+            logger.info("==================================================")
         except Exception as e:
             raise RuntimeError(f"Failed to instantiate tracker '{tracker_type}': {e}")
 

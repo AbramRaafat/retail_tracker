@@ -19,16 +19,30 @@ class AssociationAuditWriter:
         
         # Headers
         self.headers = [
-            "frame_id", "association_stage", "track_index", "track_id", "track_state",
+            "row_type", "frame_id", "association_stage", "track_index", "track_id", "track_state",
             "track_history_len", "frames_since_update", "num_dets_high", "num_dets_low",
-            "num_dets_deleted_high", "best_det_index", "best_det_tier", "best_det_score",
+            "num_dets_deleted_high",
+            "det_index", "det_tier", "det_score", "det_box", "track_predicted_box",
+            "iou_sim", "iou_dist", "cosine_distance", "confidence_distance", "angle_distance",
+            "static_weighted_cost_before_penalty", "low_or_deleted_penalty",
+            "cost_after_penalty", "blocked_by_iou_gate", "final_cost_after_gate_clip",
+            "track_matched",
+            "best_det_index", "best_det_tier", "best_det_score",
             "best_final_cost", "second_best_final_cost", "best_second_margin",
             "best_iou_sim", "best_iou_dist", "best_cos_dist", "best_conf_dist",
             "best_angle_dist", "best_blocked_by_iou_gate", "matched", "matched_det_index",
             "matched_det_tier", "matched_det_score", "matched_final_cost", "matched_iou_sim",
             "matched_cos_dist", "matched_conf_dist", "matched_angle_dist",
             "best_normal_det_index", "best_normal_det_tier", "best_normal_final_cost",
-            "recovered_by_deleted_high", "feature_update_frozen"
+            "best_static_candidate_index", "best_static_candidate_tier",
+            "recovered_by_deleted_high", "feature_update_frozen",
+            "mahalanobis_squared", "mahalanobis_gate_threshold", "mahalanobis_passed_gate",
+            "mahalanobis_normalized_cost", "mahalanobis_applicable", "mahalanobis_failed",
+            "matched_candidate_passed_mahalanobis_gate",
+            "best_static_candidate_passed_mahalanobis_gate",
+            "unmatched_track_had_mahalanobis_valid_candidate",
+            "mahalanobis_would_reject_matched_candidate",
+            "mahalanobis_would_allow_iou_blocked_candidate"
         ]
         
         self.writer = csv.DictWriter(self.file, fieldnames=self.headers)
@@ -43,7 +57,7 @@ class AssociationAuditWriter:
     def write_row(self, row_dict: Dict[str, Any]) -> None:
         if self.max_frames is not None and row_dict["frame_id"] > self.max_frames:
             return
-        self.writer.writerow(row_dict)
+        self.writer.writerow({header: row_dict.get(header, "") for header in self.headers})
         self.rows_written += 1
         if self.rows_written % 100 == 0:
             self.file.flush()

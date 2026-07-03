@@ -10,17 +10,17 @@ min_hits:
 
 det_thresh:
   type: uniform
-  default: 0.4
+  default: 0.40
   range: [0.1, 0.8]
 
 iou_threshold:
   type: uniform
-  default: 0.3
+  default: 0.30
   range: [0.1, 0.9]
 
 match_thr:
   type: uniform
-  default: 0.8
+  default: 0.55
   range: [0.5, 0.95]
 
 penalty_p:
@@ -45,13 +45,13 @@ tai_thr:
 
 init_thr:
   type: uniform
-  default: 0.6
+  default: 0.40
   range: [0.4, 0.9]
 
 cost_mode:
   type: choice
   default: static
-  options: [static, static_shadow_mahalanobis, static_mahalanobis_gate, static_mahalanobis_blend]
+  options: [static]
 
 relaxed_association_mode:
   type: choice
@@ -83,55 +83,3 @@ relaxed_recovery_penalty:
 relaxed_recovery_freeze_feature_update:
   type: boolean
   default: true
-
-mahalanobis_enabled:
-  type: boolean
-  default: false
-
-mahalanobis_gate_dim:
-  type: choice
-  default: 4
-  options: [2, 4]
-
-mahalanobis_gate_confidence:
-  type: choice
-  default: 0.99
-  options: [0.95, 0.99, 0.999]
-
-mahalanobis_gate_threshold:
-  type: optional_float
-  default: null
-
-mahalanobis_apply_to_states:
-  type: choice
-  default: lost_only
-  options: [all, lost_only, tracked_only]
-
-mahalanobis_apply_to_tiers:
-  type: choice
-  default: all
-  options: [all, low_only, high_low, deleted_only]
-
-mahalanobis_jitter:
-  type: uniform
-  default: 0.000001
-  range: [0.0, 0.001]
-
-mahalanobis_fail_open:
-  type: boolean
-  default: true
-
-mahalanobis_weight:
-  type: uniform
-  default: 0.05
-  range: [0.0, 0.5]
-
-mahalanobis_blend_apply_to_states:
-  type: choice
-  default: lost_only
-  options: [all, lost_only, tracked_only]
-
-mahalanobis_blend_apply_to_tiers:
-  type: choice
-  default: all
-  options: [all, low_only, high_low, deleted_only]

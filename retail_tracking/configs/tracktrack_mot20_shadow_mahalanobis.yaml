@@ -10,17 +10,17 @@ min_hits:
 
 det_thresh:
   type: uniform
-  default: 0.4
+  default: 0.40
   range: [0.1, 0.8]
 
 iou_threshold:
   type: uniform
-  default: 0.3
+  default: 0.30
   range: [0.1, 0.9]
 
 match_thr:
   type: uniform
-  default: 0.8
+  default: 0.55
   range: [0.5, 0.95]
 
 penalty_p:
@@ -45,12 +45,12 @@ tai_thr:
 
 init_thr:
   type: uniform
-  default: 0.6
+  default: 0.40
   range: [0.4, 0.9]
 
 cost_mode:
   type: choice
-  default: static
+  default: static_shadow_mahalanobis
   options: [static, static_shadow_mahalanobis, static_mahalanobis_gate, static_mahalanobis_blend]
 
 relaxed_association_mode:
@@ -86,7 +86,7 @@ relaxed_recovery_freeze_feature_update:
 
 mahalanobis_enabled:
   type: boolean
-  default: false
+  default: true
 
 mahalanobis_gate_dim:
   type: choice

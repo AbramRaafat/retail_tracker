@@ -143,7 +143,9 @@ def run_eval() -> None:
     logger.info("Video path: %s", args.video)
     logger.info("Model path: %s", args.model)
     logger.info("Tracker type: %s", args.tracker)
+    logger.info("Tracker config path: %s", args.config)
     logger.info("MOT output path: %s", args.mot_out)
+    logger.info("Relaxed detections enabled: %s", args.relaxed_dets)
 
     # Ensure parent directory for MOT output exists
     Path(args.mot_out).parent.mkdir(parents=True, exist_ok=True)

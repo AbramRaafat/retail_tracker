@@ -28,6 +28,17 @@ class TrackTrack(BaseTracker):
         relaxed_recovery_match_thr: float = 0.55,
         relaxed_recovery_penalty: float = 0.40,
         relaxed_recovery_freeze_feature_update: bool = True,
+        mahalanobis_enabled: bool = False,
+        mahalanobis_gate_dim: int = 4,
+        mahalanobis_gate_confidence: float = 0.99,
+        mahalanobis_gate_threshold: Optional[float] = None,
+        mahalanobis_apply_to_states: str = "lost_only",
+        mahalanobis_apply_to_tiers: str = "all",
+        mahalanobis_jitter: float = 1e-6,
+        mahalanobis_fail_open: bool = True,
+        mahalanobis_weight: float = 0.05,
+        mahalanobis_blend_apply_to_states: str = "lost_only",
+        mahalanobis_blend_apply_to_tiers: str = "all",
         **kwargs,
     ):
         self.reid_model = kwargs.get("reid_model")
@@ -61,6 +72,17 @@ class TrackTrack(BaseTracker):
             relaxed_recovery_match_thr=relaxed_recovery_match_thr,
             relaxed_recovery_penalty=relaxed_recovery_penalty,
             relaxed_recovery_freeze_feature_update=relaxed_recovery_freeze_feature_update,
+            mahalanobis_enabled=mahalanobis_enabled,
+            mahalanobis_gate_dim=mahalanobis_gate_dim,
+            mahalanobis_gate_confidence=mahalanobis_gate_confidence,
+            mahalanobis_gate_threshold=mahalanobis_gate_threshold,
+            mahalanobis_apply_to_states=mahalanobis_apply_to_states,
+            mahalanobis_apply_to_tiers=mahalanobis_apply_to_tiers,
+            mahalanobis_jitter=mahalanobis_jitter,
+            mahalanobis_fail_open=mahalanobis_fail_open,
+            mahalanobis_weight=mahalanobis_weight,
+            mahalanobis_blend_apply_to_states=mahalanobis_blend_apply_to_states,
+            mahalanobis_blend_apply_to_tiers=mahalanobis_blend_apply_to_tiers,
         )
         self.tracker = CoreTrackTrack(tracktrack_args)
 

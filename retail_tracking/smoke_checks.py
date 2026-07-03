@@ -841,6 +841,179 @@ def check_no_relaxed_detections_identical_behavior():
     np.testing.assert_array_equal(tracks_rec, tracks_orig, err_msg="No relaxed detections behavior differ between modes")
 
 
+def check_static_shadow_matches_static_behavior():
+    dets_f1 = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    dets_f2 = np.array([[1, 0, 11, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.ones((1, 128), dtype=np.float32)
+
+    class TwoFrameDetector:
+        def __init__(self):
+            self.frame = 0
+
+        def predict(self, frame):
+            self.frame += 1
+            dets = dets_f1 if self.frame == 1 else dets_f2
+            return JDEResult(detections=dets, embeddings=embs, metadata={"has_embeddings": True})
+
+    outputs = []
+    for cost_mode in ("static", "static_shadow_mahalanobis"):
+        tracker_wrapper = TrackTrack(
+            min_hits=1,
+            cost_mode=cost_mode,
+            mahalanobis_enabled=(cost_mode != "static"),
+        )
+        retail_tracker = RetailTracker.__new__(RetailTracker)
+        retail_tracker.detector = TwoFrameDetector()
+        retail_tracker.tracker = tracker_wrapper
+        retail_tracker.appearance_mode = "jde"
+        retail_tracker.allow_zero_embs = False
+        retail_tracker.last_jde_metadata = {}
+        retail_tracker.last_route_metadata = {}
+
+        retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+        outputs.append(retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8)))
+
+    np.testing.assert_array_equal(outputs[0], outputs[1], err_msg="Shadow Mahalanobis changed static matches")
+
+
+def check_mahalanobis_distance_correctness():
+    from boxmot.trackers.tracktrack.core.utils import mahalanobis_distance_matrix
+
+    class DummyKalman:
+        def project(self, mean, covariance, confidence):
+            return mean[:4], covariance[:4, :4]
+
+    class DummyTrack:
+        state = 2
+        score = 0.9
+        mean = np.array([0.0, 0.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        covariance = np.diag([4.0, 9.0, 16.0, 25.0, 1.0, 1.0, 1.0, 1.0]).astype(np.float64)
+        kalman_filter = DummyKalman()
+
+    class DummyDet:
+        score = 0.9
+
+        @property
+        def cxcywh(self):
+            return np.array([2.0, 3.0, 6.0, 7.0], dtype=np.float64)
+
+    args = types.SimpleNamespace(mahalanobis_gate_dim=4, mahalanobis_jitter=1e-6)
+    dist, failed = mahalanobis_distance_matrix([DummyTrack()], [DummyDet()], args)
+    expected = (2.0 ** 2 / 4.0) + (3.0 ** 2 / 9.0) + (4.0 ** 2 / 16.0) + (5.0 ** 2 / 25.0)
+    assert not failed[0, 0]
+    assert np.isclose(dist[0, 0], expected)
+
+    args.mahalanobis_gate_dim = 2
+    dist_2d, failed_2d = mahalanobis_distance_matrix([DummyTrack()], [DummyDet()], args)
+    expected_2d = (2.0 ** 2 / 4.0) + (3.0 ** 2 / 9.0)
+    assert not failed_2d[0, 0]
+    assert np.isclose(dist_2d[0, 0], expected_2d)
+
+
+def check_mahalanobis_gate_behavior_and_empty_inputs():
+    from boxmot.trackers.tracktrack.core.track import Track, TrackCounter, TrackState
+    from boxmot.trackers.tracktrack.core.utils import iterative_assignment, mahalanobis_distance_matrix
+
+    args = types.SimpleNamespace(
+        data_path="Live",
+        min_len=1,
+        mahalanobis_enabled=True,
+        mahalanobis_gate_dim=4,
+        mahalanobis_gate_confidence=0.99,
+        mahalanobis_gate_threshold=None,
+        mahalanobis_apply_to_states="all",
+        mahalanobis_apply_to_tiers="all",
+        mahalanobis_jitter=1e-6,
+        mahalanobis_fail_open=True,
+        mahalanobis_weight=0.05,
+    )
+    context = types.SimpleNamespace(args=args, audit_writer=None)
+    base_det = np.r_[np.array([0, 0, 10, 10, 0.9, 0], dtype=np.float32), np.ones(128, dtype=np.float32)]
+    track = Track(args, base_det)
+    track.initiate(1, TrackCounter())
+    track.state = TrackState.Lost
+    track.mean = np.array([5.0, 5.0, 10.0, 10.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    track.covariance = np.eye(8, dtype=np.float64) * 1e-4
+
+    inside = Track(args, base_det.copy())
+    outside_arr = base_det.copy()
+    outside_arr[:4] = np.array([2, 0, 12, 10], dtype=np.float32)
+    outside = Track(args, outside_arr)
+
+    matches_inside, _, _ = iterative_assignment(
+        [track], [inside], [], [], 0.99, 0.20, 0.40, 0.05, 2,
+        cost_mode="static_mahalanobis_gate", context=context
+    )
+    assert matches_inside == [[0, 0]]
+
+    matches_outside, _, _ = iterative_assignment(
+        [track], [outside], [], [], 0.99, 0.20, 0.40, 0.05, 2,
+        cost_mode="static_mahalanobis_gate", context=context
+    )
+    assert matches_outside == []
+
+    empty_matches, empty_tracks, empty_dets = iterative_assignment(
+        [], [], [], [], 0.99, 0.20, 0.40, 0.05, 2,
+        cost_mode="static_mahalanobis_gate", context=context
+    )
+    assert empty_matches == []
+    assert empty_tracks == []
+    assert empty_dets == []
+
+    track.covariance = np.zeros((8, 8), dtype=np.float64)
+    dist, failed = mahalanobis_distance_matrix([track], [inside], args)
+    assert dist.shape == (1, 1)
+    assert failed.shape == (1, 1)
+
+
+def check_mahalanobis_audit_fields_exist():
+    import csv
+    import os
+
+    dets = np.array([[0, 0, 10, 10, 0.9, 0]], dtype=np.float32)
+    embs = np.ones((1, 128), dtype=np.float32)
+
+    class RepeatDetector:
+        def predict(self, frame):
+            return JDEResult(detections=dets, embeddings=embs, metadata={"has_embeddings": True})
+
+    csv_temp_path = "outputs/smoke_mahalanobis_audit/assoc.csv"
+    tracker_wrapper = TrackTrack(
+        min_hits=1,
+        cost_mode="static_shadow_mahalanobis",
+        mahalanobis_enabled=True,
+    )
+    tracker_wrapper.set_audit_params(assoc_debug_csv=csv_temp_path, assoc_debug_max_frames=2)
+
+    retail_tracker = RetailTracker.__new__(RetailTracker)
+    retail_tracker.detector = RepeatDetector()
+    retail_tracker.tracker = tracker_wrapper
+    retail_tracker.appearance_mode = "jde"
+    retail_tracker.allow_zero_embs = False
+    retail_tracker.last_jde_metadata = {}
+    retail_tracker.last_route_metadata = {}
+
+    retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    retail_tracker.process_frame(np.zeros((16, 16, 3), dtype=np.uint8))
+    tracker_wrapper.close_audit()
+
+    with open(csv_temp_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        headers = reader.fieldnames or []
+        assert "mahalanobis_squared" in headers
+        assert "mahalanobis_passed_gate" in headers
+        assert "static_weighted_cost_before_penalty" in headers
+        rows = list(reader)
+        assert rows
+        assert rows[0]["row_type"] == "pair"
+
+    try:
+        os.remove(csv_temp_path)
+        os.rmdir("outputs/smoke_mahalanobis_audit")
+    except Exception:
+        pass
+
+
 def main() -> None:
     check_jde_result_optional_fields()
     check_embedding_normalization()
@@ -856,6 +1029,10 @@ def main() -> None:
     check_relaxed_recovery_new_tracks_restriction()
     check_relaxed_recovery_reduces_deleted_high_to_tracked()
     check_no_relaxed_detections_identical_behavior()
+    check_static_shadow_matches_static_behavior()
+    check_mahalanobis_distance_correctness()
+    check_mahalanobis_gate_behavior_and_empty_inputs()
+    check_mahalanobis_audit_fields_exist()
     print("retail_tracking smoke checks passed")
 
 
